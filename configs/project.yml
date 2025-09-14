@@ -1,0 +1,23 @@
+# Wikibase Bulk Kit Project Configuration
+name: "Chile Open Data"
+version: "1.0.0"
+description: "Bulk upload of Chilean open datasets to Wikibase"
+
+wikibase:
+  url: "https://example.wikibase.org"
+  username: "admin"
+  password: "password"
+  entity_namespace: "Item"
+  property_namespace: "Property"
+
+upload:
+  batch_size: 50
+  max_retries: 3
+  retry_delay: 5
+
+# Additional settings
+settings:
+  language: "en"
+  default_timezone: "UTC"
+  enable_audit_logging: true
+  max_concurrent_uploads: 5

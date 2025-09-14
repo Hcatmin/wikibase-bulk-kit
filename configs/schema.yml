@@ -1,0 +1,30 @@
+namespace: "Chile"
+language: "en"
+
+
+items:
+  - 
+    id: "Q4"
+    label: "Territory"
+    description: "a region of the world"
+    aliases: ["region", "area"]
+
+  - 
+    id: "Q5"
+    label: "Country"
+    description: "distinct territorial body or political entity"
+    aliases: ["countries"]
+    statements:
+      P2:
+        value: "Q4"
+        datatype: "wikibase-item"
+
+  - 
+    id: "Q6"
+    label: "Chile"
+    description: "Country in South America"
+    aliases: ["Chilean country"]
+    statements:
+      P1:
+        value: "Q5"
+        datatype: "wikibase-item"

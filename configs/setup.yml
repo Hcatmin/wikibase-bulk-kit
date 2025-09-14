@@ -1,0 +1,41 @@
+namespace: "Setup"
+language: "en"
+
+# Essential properties every Wikibase should have
+properties:
+  - label: "instance of"
+    description: "that class of which this subject is a particular example and member"
+    datatype: "wikibase-item"
+    aliases: ["is a", "type of", "item of type"]
+
+  - label: "subclass of"
+    description: "class of which this subject is a subclass"
+    datatype: "wikibase-item"
+    aliases: ["is a subclass of", "kind of"]
+
+  - label: "label"
+    description: "human-readable name of the item"
+    datatype: "string"
+    aliases: ["name", "title"]
+
+  - label: "description"
+    description: "brief description of the item"
+    datatype: "string"
+    aliases: ["summary", "brief"]
+
+# Essential items every Wikibase should have
+items:
+  - label: "item"
+    description: "basic entity in the knowledge base"
+    aliases: ["entity", "object"]
+    statements: {}
+
+  - label: "property"
+    description: "attribute or relation of an item"
+    aliases: ["attribute", "relation"]
+    statements: {}
+
+  - label: "class"
+    description: "category or type of items"
+    aliases: ["category", "type"]
+    statements: {}
