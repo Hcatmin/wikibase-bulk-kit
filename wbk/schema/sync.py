@@ -44,6 +44,7 @@ class SchemaSyncer:
         self.language = schema_config.language
         
         total_tasks = len(schema_config.properties) + len(schema_config.items)
+        schema_updated = False
         
         with Progress(
             SpinnerColumn(),
@@ -61,7 +62,8 @@ class SchemaSyncer:
                     total=len(schema_config.properties)
                 )
                 for prop in schema_config.properties:
-                    self._sync_property(prop)
+                    if self._sync_property(prop):
+                        schema_updated = True
                     progress.advance(task)
             
             # Sync items
@@ -71,14 +73,24 @@ class SchemaSyncer:
                     total=len(schema_config.items)
                 )
                 for item in schema_config.items:
-                    self._sync_item(item)
+                    if self._sync_item(item):
+                        schema_updated = True
                     progress.advance(task)
         
-        console.print(Panel(
-            Text("✓ Schema synchronization completed!", style="green bold"),
-            title="Success",
-            border_style="green"
-        ))
+        # Save updated schema back to file if any IDs were created
+        if schema_updated:
+            self._save_schema_config(schema_path, schema_config)
+            console.print(Panel(
+                Text("✓ Schema synchronization completed and config file updated with new IDs!", style="green bold"),
+                title="Success",
+                border_style="green"
+            ))
+        else:
+            console.print(Panel(
+                Text("✓ Schema synchronization completed!", style="green bold"),
+                title="Success",
+                border_style="green"
+            ))
     
     def _load_schema_config(self, schema_path: str) -> SchemaConfig:
         """Load schema configuration from YAML file.
@@ -98,37 +110,67 @@ class SchemaSyncer:
         
         return SchemaConfig(**schema_data)
     
-    def _sync_property(self, property_schema) -> None:
+    def _save_schema_config(self, schema_path: str, schema_config: SchemaConfig) -> None:
+        """Save schema configuration to YAML file.
+        
+        Args:
+            schema_path: Path to schema configuration file
+            schema_config: Schema configuration to save
+        """
+        schema_file = Path(schema_path)
+        
+        # Convert schema config to dictionary
+        schema_data = schema_config.model_dump()
+        
+        # Write to YAML file
+        with open(schema_file, 'w', encoding='utf-8') as f:
+            yaml.dump(schema_data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        
+        console.print(f"  [green]✓ Updated schema file: {schema_path}[/green]")
+    
+    def _sync_property(self, property_schema) -> bool:
         """Sync a single property to Wikibase.
         
         Args:
             property_schema: Property schema definition
+            
+        Returns:
+            True if schema was updated (new ID created), False otherwise
         """
         console.print(f"  [cyan]Syncing property: {property_schema.label}[/cyan]")
         
         if property_schema.id:
             console.print(f"    [yellow]Updating existing property {property_schema.id}[/yellow]")
-            self._update_property(property_schema)
+            return self._update_property(property_schema)
         else:
             console.print(f"    [yellow]Creating new property: {property_schema.datatype}[/yellow]")
-            self._create_property(property_schema)
+            new_id = self._create_property(property_schema)
+            if new_id:
+                property_schema.id = new_id  # Update schema with new ID
+                return True
+            return False
     
-    def _sync_item(self, item_schema) -> None:
+    def _sync_item(self, item_schema) -> bool:
         """Sync a single item to Wikibase.
         
         Args:
             item_schema: Item schema definition
+            
+        Returns:
+            True if schema was updated (new ID created), False otherwise
         """
         console.print(f"  [cyan]Syncing item: {item_schema.label}[/cyan]")
         
         if item_schema.id:
             console.print(f"    [yellow]Updating existing item {item_schema.id}[/yellow]")
-            self._update_item(item_schema)
+            return self._update_item(item_schema)
         else:
             console.print(f"    [yellow]Creating new item[/yellow]")
             new_id = self._create_item(item_schema)
             if new_id:
                 item_schema.id = new_id  # Update schema with new ID
+                return True
+            return False
     
     def _create_property(self, property_schema) -> str | None:
         """Create a new property in Wikibase.
