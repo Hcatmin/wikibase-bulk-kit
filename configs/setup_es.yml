@@ -1,55 +1,48 @@
-namespace: "Setup"
-language: "es"
-
-# Essential properties every Wikibase should have
+namespace: Setup
+language: es
 properties:
   - 
-    id: "P1"
     label: "instancia de"
     description: "que clase de la cual este sujeto es un ejemplo particular y miembro"
     datatype: "wikibase-item"
     aliases: ["es una", "tipo de", "elemento de tipo"]
 
   - 
-    id: "P2"
     label: "subclase de"
     description: "clase de la cual este sujeto es una subclase"
     datatype: "wikibase-item"
-    aliases: ["es una subclase de", "tipo de"]
+    aliases: ["es una subclase de", "tipo de"]  
 
   - 
-    id: "P3"
     label: "etiqueta"
     description: "nombre legible por humanos del elemento"
     datatype: "string"
     aliases: ["nombre", "título"]
 
   - 
-    id: "P4"
     label: "descripción"
     description: "breve descripción del elemento"
     datatype: "string"
     aliases: ["resumen", "breve"]
 
-# Essential items every Wikibase should have
+  - 
+    label: "dirección web de la referencia"
+    description: "debe usarse para enlaces web que se utilizan como referencia"
+    datatype: "url"
+    aliases: ["URL", "referencia web"]
+
 items:
   - 
-    id: "Q1"
     label: "elemento"
     description: "entidad básica en la base de conocimiento"
     aliases: ["entidad", "objeto"]
-    statements: {}
 
   - 
-    id: "Q2"
     label: "propiedad"
     description: "atributo o relación de un elemento"
     aliases: ["atributo", "relación"]
-    statements: {}
 
   - 
-    id: "Q3"
-    label: "class"
+    label: "clase"
     description: "categoría o tipo de elementos"
     aliases: ["categoría", "tipo"]
-    statements: {}

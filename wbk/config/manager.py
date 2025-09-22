@@ -97,6 +97,7 @@ class ConfigManager:
             config = self.config
             wbi_config['MEDIAWIKI_API_URL'] = f"{config.wikibase.url}/w/api.php"
             wbi_config['WIKIBASE_URL'] = config.wikibase.url
+            wbi_config['SPARQL_ENDPOINT_URL'] = config.wikibase.sparql_endpoint
             
             # Initialize Wikibase Integrator
             self._wbi = WikibaseIntegrator()

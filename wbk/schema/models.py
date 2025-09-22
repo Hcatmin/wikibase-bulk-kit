@@ -15,6 +15,26 @@ class PropertySchema(BaseModel):
     constraints: dict[str, Any] = Field(default_factory=dict, description="Property constraints")
 
 
+class ClaimSchema(BaseModel):
+    """Schema definition for a Wikibase claim. Used for qualifiers and references."""
+    id: str | None = Field(None, description="Claim property ID (P123)")
+    label: str | None = Field(None, description="Claim property label")
+    value: str = Field(..., description="Claim value")
+    datatype: str = Field(..., description="Claim datatype")
+
+
+class StatementSchema(BaseModel):
+    """Schema definition for a Wikibase statement."""
+    
+    id: str | None = Field(None, description="Property ID (P123)")
+    label: str | None = Field(None, description="Property label")
+    value: str = Field(..., description="Value")
+    datatype: str = Field(..., description="Datatype")
+    qualifiers: list[ClaimSchema] | None = Field(default_factory=list, description="Qualifiers")
+    references: list[ClaimSchema] | None = Field(default_factory=list, description="References")
+    rank: str | None = Field(None, description="Rank")
+
+
 class ItemSchema(BaseModel):
     """Schema definition for a Wikibase item."""
     
@@ -22,7 +42,7 @@ class ItemSchema(BaseModel):
     label: str = Field(..., description="Item label")
     description: str = Field(..., description="Item description")
     aliases: list[str] = Field(default_factory=list, description="Item aliases")
-    statements: dict[str, Any] = Field(default_factory=dict, description="Default statements")
+    statements: list[StatementSchema] = Field(default_factory=list, description="Default statements")
 
 
 class SchemaConfig(BaseModel):

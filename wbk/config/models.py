@@ -13,6 +13,7 @@ class WikibaseConfig(BaseModel):
     token: str | None = Field(None, description="API token for authentication")
     entity_namespace: str = Field("Item", description="Entity namespace (Item, Property)")
     property_namespace: str = Field("Property", description="Property namespace")
+    sparql_endpoint: str | None = Field(None, description="SPARQL endpoint URL")
 
 
 class ProjectConfig(BaseModel):
