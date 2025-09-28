@@ -1,5 +1,6 @@
 """Schema synchronization to Wikibase."""
 
+import re
 import yaml
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ from wikibaseintegrator.wbi_enums import ActionIfExists
 from wikibaseintegrator import wbi_helpers
 
 from ..config.manager import ConfigManager
-from .models import QualifierSchema, ReferenceSchema, SchemaConfig, StatementSchema
+from .models import SchemaConfig, StatementSchema, ClaimSchema, ItemSchema, PropertySchema
 
 console = Console(force_terminal=True, width=120)
 stderr_console = Console(file=sys.stderr, force_terminal=True, width=120)
@@ -35,8 +36,37 @@ class SchemaSyncer:
         self.language: str = 'en'
         self.wbi = config_manager.get_wikibase_integrator()
         # cache of properties/items for syncing execution time
-        self.properties_by_label = {} 
-        self.items_by_label = {}
+        self.properties_by_label: dict[str, str] = {} 
+        self.items_by_label_and_description: dict[str, dict[str, str]] = {}
+
+    def items_by_expression(self, expression: str) -> str | None:
+        """Get the cache of items by label and description.
+        
+        Args:
+            expression: String to search for, it should has the format "label (substring of description)"
+            
+        Returns:
+            Item ID if found, None otherwise
+        """
+
+        if re.match(r'.+ \(.+\)$', expression):
+            label = expression.split('(')[0].strip()
+            key_word = expression.split('(')[1].split(')')[0].strip()
+
+            items_by_label = self.items_by_label_and_description.get(label, {})
+            for item_id, item_description in items_by_label.items():
+                if key_word in item_description:
+                    return item_id
+        else:
+            label = expression
+
+            items_by_label = self.items_by_label_and_description.get(label, {})
+            if len(items_by_label) == 1:
+                return list(items_by_label.values())[0]
+            else:
+                return None
+
+
     
     def sync(self, schema_path: str) -> None:
         """Sync schema definitions to Wikibase.
@@ -307,20 +337,18 @@ class SchemaSyncer:
             return None
 
 
-    def _find_item_by_filter(self, string:str) -> str | None:
+    def _find_item_by_expression(self, expression:str) -> str | None:
         """Find an item by label and description match.
         
         Args:
-            string: String to search for, it should has the format "label (substring of description)"
+            expression: String to search for, it should has the format "label (substring of description)" or just "label"
             
         Returns:
             Item ID if found, None otherwise
         """
-        import re
-
-        if re.match(r'.+ \(.+\)$', string):
-            label = string.split('(')[0].strip()
-            description = string.split('(')[1].split(')')[0].strip()
+        if re.match(r'.+ \(.+\)$', expression):
+            label = expression.split('(')[0].strip()
+            description = expression.split('(')[1].split(')')[0].strip()
             try:
                 # Use SPARQL query to find items by label and description substring
                 query = f"""
@@ -346,14 +374,14 @@ class SchemaSyncer:
                 return None
         else:
             try:
-                return self._find_item_by_label(string)
+                return self._find_item_by_label(expression)
             except Exception as e:
                 console.print(f"    [yellow]SPARQL search failed, falling back to search_entities: {e}[/yellow]")
                 return None
 
 
 
-    def _sync_item(self, item_schema) -> None:
+    def _sync_item(self, item_schema: ItemSchema) -> None:
         """Sync a single item to Wikibase.
         
         Args:
@@ -379,10 +407,14 @@ class SchemaSyncer:
         else:
             console.print(f"    [yellow]Creating new item[/yellow]")
             item_schema.id = self._create_item(item_schema)
+
         
-        self.items_by_label[item_schema.label] = item_schema.id
+        if item_schema.label not in self.items_by_label_and_description:
+            self.items_by_label_and_description[item_schema.label] = {}
+        self.items_by_label_and_description[item_schema.label][item_schema.description] = item_schema.id
+
     
-    def _create_property(self, property_schema) -> str | None:
+    def _create_property(self, property_schema: PropertySchema) -> str | None:
         """Create a new property in Wikibase.
         
         Args:
@@ -414,7 +446,7 @@ class SchemaSyncer:
             stderr_console.print(f"    [red]✗ Error creating property: {e}[/red]")
             return None
     
-    def _update_property(self, property_schema) -> bool:
+    def _update_property(self, property_schema: PropertySchema) -> bool:
         """Update an existing property in Wikibase.
         
         Args:
@@ -444,7 +476,7 @@ class SchemaSyncer:
             stderr_console.print(f"    [red]✗ Error updating property: {e}[/red]")
             return False
     
-    def _create_item(self, item_schema) -> str | None:
+    def _create_item(self, item_schema: ItemSchema) -> str | None:
         """Create a new item in Wikibase.
         
         Args:
@@ -483,7 +515,7 @@ class SchemaSyncer:
             stderr_console.print(f"    [red]✗ Error creating item: {e}[/red]")
             return None
     
-    def _update_item(self, item_schema) -> bool:
+    def _update_item(self, item_schema: ItemSchema) -> bool:
         """Update an existing item in Wikibase.
         
         Args:
@@ -508,7 +540,11 @@ class SchemaSyncer:
                 # Get all claims to add
                 claims_to_add = self._create_claims_from_statements(item_schema.statements)
                 if claims_to_add:
-                    # Replace all claims using ActionIfExists.REPLACE_ALL
+                    # Use FORCE_APPEND to ensure the claim is added even if it exists
+                    # This will create duplicates, but we'll handle that with REPLACE_ALL
+                    # item.add_claims(claims_to_add, ActionIfExists.FORCE_APPEND)
+                    
+                    # Now use REPLACE_ALL to clean up duplicates
                     item.add_claims(claims_to_add, ActionIfExists.REPLACE_ALL)
             
             # Write the updated item
@@ -540,7 +576,7 @@ class SchemaSyncer:
 
         return claims_to_add
     
-    def _create_claim(self, statement: StatementSchema | QualifierSchema | ReferenceSchema):
+    def _create_claim(self, statement: StatementSchema | ClaimSchema):
         """Create a claim object based on value and datatype.
         
         Args:
@@ -551,8 +587,15 @@ class SchemaSyncer:
             
         """
         if not statement.id:
-            statement_id = self._find_property_by_label(statement.label)
-                
+            # First check local cache for properties created in this sync session
+            if statement.label in self.properties_by_label:
+                statement_id = self.properties_by_label[statement.label]
+            else:
+                # Fallback to SPARQL search for existing properties
+                statement_id = self._find_property_by_label(statement.label)
+        else:
+            statement_id = statement.id  # Use the provided ID
+            
         if not statement_id:
             return None
             
@@ -572,15 +615,19 @@ class SchemaSyncer:
                             references.add(self._create_claim(reference))
 
                     if not statement.value.startswith('Q'):
-                        statement.value = self._find_item_by_label(statement.value)
-                        
-                    return Item(prop_nr=statement_id, value=statement.value, qualifiers=qualifiers, references=references)
+                        value = self.items_by_expression(statement.value)
+                        if not value:
+                            value = self._find_item_by_expression(statement.value)
+
+                    item = Item(prop_nr=statement_id, value=value, qualifiers=qualifiers, references=references)
+                    # console.print(f"[green]Created item: {item}[/green]")
+                    return item
                 case 'url':
                     return URL(prop_nr=statement_id, value=str(statement.value))
                 case 'commonsMedia':
                     return CommonsMedia(prop_nr=statement_id, value=str(statement.value))
                 case 'time':
-                    return Time(prop_nr=statement_id, value=str(statement.value))
+                    return Time(prop_nr=statement_id, time=str(statement.value))
                 case 'quantity':
                     return Quantity(prop_nr=statement_id, value=str(statement.value))
                 case 'external-id':
