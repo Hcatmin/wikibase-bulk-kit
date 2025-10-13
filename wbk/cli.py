@@ -6,6 +6,7 @@ from rich.console import Console
 import sys
 
 from wbk.config.manager import ConfigManager
+from wbk.mapping.processor import MappingProcessor
 from wbk.schema.sync import SchemaSyncer
 
 console = Console()
@@ -28,10 +29,9 @@ def cli():
     help='Path to project config'
 )
 @click.option(
-    '--schema', '-s', 
+    '--path', '-p', 
     'schema_path', 
     type=click.Path(exists=True, path_type=Path),
-    default='configs/schema.yml', 
     help='Path to schema config'
 )
 def schema(config_path: Path, schema_path: Path) -> None:
@@ -47,6 +47,34 @@ def schema(config_path: Path, schema_path: Path) -> None:
         stderr_console.print(f"[red]✗ Schema sync failed: {e}[/red]")
         raise click.Abort()
 
+
+@cli.command()
+@click.option(
+    '--config', '-c', 
+    'config_path', 
+    type=click.Path(exists=True, path_type=Path),
+    default='configs/project.yml', 
+    help='Path to project config'
+)
+@click.option(
+    '--path', '-p', 
+    'mapping_path', 
+    type=click.Path(exists=True, path_type=Path),
+    help='Path to mapping config'
+)
+def mapping(config_path: Path, mapping_path: Path) -> None:
+    """Process CSV files into Wikibase from project.yml."""
+    console.print("[blue]Starting mapping process...[/blue]")
+    
+    try:
+        config_manager = ConfigManager(str(config_path))
+        mapping_processor = MappingProcessor(config_manager)
+        console.print(f"[blue]Processing mapping config from {mapping_path}[/blue]")
+        mapping_processor.process(str(mapping_path))
+        console.print("[green]✓ Mapping process completed successfully![/green]")
+    except Exception as e:
+        stderr_console.print(f"[red]✗ Mapping process failed: {e}[/red]")
+        raise click.Abort()
 
 if __name__ == "__main__":
     cli()
