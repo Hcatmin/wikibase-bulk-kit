@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.panel import Panel
 from rich.text import Text
-from wikibaseintegrator.models import Qualifiers, References, Reference
+from wikibaseintegrator.models import Qualifiers, References
 from wikibaseintegrator.datatypes import (
     String, ExternalID, Time, Quantity, Item, URL, CommonsMedia
 )
@@ -162,6 +162,21 @@ class SchemaSyncer:
         
         except Exception as e:
             console.print(f"    [yellow]SPARQL search failed, falling back to search_entities: {e}[/yellow]")
+            # Fallback to search_entities if SPARQL fails
+            properties = wbi_helpers.search_entities(label, language=self.language, search_type='property', dict_result=True)
+
+            for prop in properties:
+                console.print(f"[green]Checking property in cache: {prop['label']}[/green]")
+                prop_id = prop.get('id', 'Unknown')
+                try:
+                    full_prop = self.wbi.property.get(entity_id=prop_id)
+                    prop_label = full_prop.labels.get(self.language)
+                    
+                    if prop_label and prop_label.value == label:
+                        return prop_id
+                except Exception:
+                    continue
+            
             return None
     
     
@@ -185,7 +200,6 @@ class SchemaSyncer:
             }}
             """
             
-            from wikibaseintegrator import wbi_helpers
             results = wbi_helpers.execute_sparql_query(query)
 
             
@@ -202,7 +216,6 @@ class SchemaSyncer:
         except Exception as e:
             console.print(f"    [yellow]SPARQL search failed, falling back to search_entities: {e}[/yellow]")
             # Fallback to search_entities if SPARQL fails
-            from wikibaseintegrator import wbi_helpers
             properties = wbi_helpers.search_entities(label, language=self.language, search_type='property', dict_result=True)
             
             for prop in properties:
@@ -245,7 +258,7 @@ class SchemaSyncer:
             console.print(f"    [yellow]Updating existing property {property_schema.id}[/yellow]")
             self._update_property(property_schema)
         else:
-            console.print(f"    [yellow]Creating new property: {property_schema.datatype}[/yellow]")
+            console.print(f"    [yellow]Creating new property: {property_schema.label}[/yellow]")
             property_schema.id = self._create_property(property_schema)
 
         self.properties_by_label[property_schema.label] = property_schema.id
@@ -540,11 +553,8 @@ class SchemaSyncer:
                 # Get all claims to add
                 claims_to_add = self._create_claims_from_statements(item_schema.statements)
                 if claims_to_add:
-                    # Use FORCE_APPEND to ensure the claim is added even if it exists
-                    # This will create duplicates, but we'll handle that with REPLACE_ALL
                     # item.add_claims(claims_to_add, ActionIfExists.FORCE_APPEND)
                     
-                    # Now use REPLACE_ALL to clean up duplicates
                     item.add_claims(claims_to_add, ActionIfExists.REPLACE_ALL)
             
             # Write the updated item
