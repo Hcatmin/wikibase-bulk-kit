@@ -8,7 +8,7 @@ decimal_separator: "."
 
 csv_files:
   - 
-    file_path: "data/20240912_Directorio_Oficial_EE_2024_20240430_WEB.csv"
+    file_path: "data/directorio_2024.csv"
     # https://datosabiertos.mineduc.cl/directorio-de-establecimientos-educacionales/
     encoding: "utf-8"
     delimiter: ";"
@@ -16,6 +16,21 @@ csv_files:
     
     item_mapping:
       - 
+        label_column: "NOM_COM_RBD"
+        description: "Comuna de Chile"
+        statements:
+          - 
+            property_id: "P15"
+            property_label: "instancia de"
+            value_label: "comuna"
+            datatype: "wikibase-item"
+      - 
         label_column: "NOM_RBD"
-      
         description: "Establecimiento educativo en Chile"
+
+        statements:
+          - 
+            property_id: "P2"
+            property_label: "comuna"
+            value_column: "NOM_COM_RBD"
+            datatype: "wikibase-item"

@@ -4,9 +4,10 @@ import gc
 import yaml
 from pathlib import Path
 
+
 from ..config.manager import ConfigManager
 import pandas as pd
-from RaiseWikibase.datamodel import entity, label, description
+from RaiseWikibase.datamodel import entity, label, description, claim, snak
 from RaiseWikibase.raiser import batch
 
 
@@ -54,6 +55,12 @@ class MappingProcessor:
         self.language = mapping_config.language
         
         for csv_file_config in mapping_config.csv_files:
+            self.current_dataframe = pd.read_csv(
+                csv_file_config.file_path, 
+                encoding=csv_file_config.encoding,
+                delimiter=csv_file_config.delimiter,
+                decimal=csv_file_config.decimal_separator
+            )
             self.process_item_mappings(csv_file_config)
 
     def process_item_mappings(self, csv_file_config: CSVFileConfig) -> None:
@@ -64,18 +71,16 @@ class MappingProcessor:
         """
 
         for item_mapping in csv_file_config.item_mapping:
-            self.current_dataframe = pd.read_csv(
-                csv_file_config.file_path, 
-                encoding=csv_file_config.encoding,
-                delimiter=csv_file_config.delimiter,
-                decimal=csv_file_config.decimal_separator
-            )
+            print(f"Processing item mapping: {item_mapping.label_column}")
             self.process_item_mapping(item_mapping)
 
     def filter_dataframe(self, dataframe: pd.DataFrame, item_mapping: ItemMapping) -> pd.DataFrame:
         """Filter the dataframe to only include the columns needed for the item mapping"""
-        statements_values = self.get_statements_values(item_mapping.statements)
-        dataframe = dataframe[[item_mapping.label_column] + statements_values]
+        statements = item_mapping.statements
+        statements_with_column = filter(lambda x: x.value_column is not None, statements)
+
+        columns = [statement.value_column for statement in statements_with_column]
+        dataframe = dataframe[[item_mapping.label_column] + columns]
         
         dataframe = dataframe.dropna(subset=[item_mapping.label_column])
 
@@ -85,26 +90,51 @@ class MappingProcessor:
         return filtered_dataframe
 
     def process_item_mapping(self, item_mapping: ItemMapping) -> None:
+        # filter only needed columns
         filtered_dataframe = self.filter_dataframe(self.current_dataframe, item_mapping)
 
+        list_of_label_values = self.get_label_by_column(filtered_dataframe, item_mapping.statements)
+
+        # search for statements QIDs
+        values_bulk_searcher = ItemBulkSearcher()
+        values = values_bulk_searcher.find_items_by_labels_optimized(list_of_label_values)
+
+        # search for items QIDs
         item_bulk_searcher = ItemBulkSearcher()
         items_found = item_bulk_searcher.find_items_by_labels_optimized(filtered_dataframe[item_mapping.label_column].tolist())
 
-        # Not found items
+        # filter items not found
         filtered_dataframe = filtered_dataframe[~filtered_dataframe[item_mapping.label_column].isin(items_found.keys())]
 
-        self.bulk_create_items(filtered_dataframe, item_mapping)
+        # create items
+        self.bulk_create_items(filtered_dataframe, item_mapping, values)
 
-
-    def get_statements_values(self, statements: list[StatementMapping] | None) -> list[str]:
+    def get_label_by_column(self, dataframe: pd.DataFrame, statements: list[StatementMapping] | None) -> list[str]:
+        # retrieve all labels from statement.value_column
 
         if statements is None:
             return []
 
-        return [statement.value_column for statement in statements]
+        # filter statement that doesnt have value_column 
+        statements_with_column = filter(lambda x: x.value_column is not None, statements)
+
+        columns = [statement.value_column for statement in statements_with_column]
+
+        list_of_labels = []
+        for col in columns:
+            column = dataframe[col]
+            column = column.drop_duplicates()
+            column = column.dropna()
+            column = column.tolist()
+            list_of_labels += column
+
+        statement_with_label = filter(lambda x: x.value_label is not None, statements)
+        list_of_labels += [statement.value_label for statement in statement_with_label]
+
+        return list_of_labels
 
 
-    def bulk_create_items(self, df: pd.DataFrame, item_mapping: ItemMapping, chunk_size: int = 1000) -> None:
+    def bulk_create_items(self, df: pd.DataFrame, item_mapping: ItemMapping, values: dict[str, str] | None, chunk_size: int = 1000) -> None:
         """Create items in chunks to avoid memory issues
         
         Args:
@@ -136,6 +166,21 @@ class MappingProcessor:
                 claims={},
                 etype='item'
             )
+
+            if values:
+                for statement in item_mapping.statements:
+                    if statement.value_column:
+                        item['claims'].update(claim(prop=statement.property_id,
+                                                    mainsnak=snak(datatype=statement.datatype,
+                                                                value=values[row[statement.value_column]],
+                                                                prop=statement.property_id,
+                                                                snaktype='value')))
+                    elif statement.value_label:
+                        item['claims'].update(claim(prop=statement.property_id,
+                                                    mainsnak=snak(datatype=statement.datatype,
+                                                                value=values[statement.value_label],
+                                                                prop=statement.property_id,
+                                                                snaktype='value')))
 
             items.append(item)
             

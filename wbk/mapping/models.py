@@ -13,11 +13,12 @@ class ClaimMapping(BaseModel):
 class StatementMapping(BaseModel):
     property_id: str = Field(..., description="Property ID")
     property_label: str = Field(..., description="Property label")
-    value_column: str = Field(..., description="Column that contains the value")
+    value_column: str | None = Field(None, description="Column on the table that contains the label for the value")
+    value_label: str | None = Field(None, description="Static label for the value (is not on the table)")
     datatype: str = Field(..., description="Datatype")
-    qualifiers: list[ClaimMapping] = Field(default_factory=list, description="Qualifiers")
-    references: list[ClaimMapping] = Field(default_factory=list, description="References")
-    rank: str = Field(..., description="Rank")
+    qualifiers: list[ClaimMapping] | None = Field(default_factory=list, description="Qualifiers")
+    references: list[ClaimMapping] | None = Field(default_factory=list, description="References")
+    rank: str | None = Field(None, description="Rank")
 
 class ItemMapping(BaseModel):
     label_column: str = Field(..., description="The column that contains the item label")
