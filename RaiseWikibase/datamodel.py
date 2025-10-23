@@ -114,7 +114,18 @@ def snak(datatype='', value='', prop='', snaktype='value'):
             'type': 'monolingualtext'
         }
     elif datatype == 'quantity':
-        val, unit, upper_bound, lower_bound = value
+        if isinstance(value, (list, tuple)) and len(value) == 4:
+            val, unit, upper_bound, lower_bound = value
+        elif isinstance(value, (list, tuple)) and len(value) == 2:
+            val, unit = value
+            upper_bound = None
+            lower_bound = None
+        else:
+            val = value
+            unit = ''
+            upper_bound = None
+            lower_bound = None
+        
         datavalue = {
             'value': {
                 'amount': val,

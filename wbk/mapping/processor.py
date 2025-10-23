@@ -11,7 +11,7 @@ from RaiseWikibase.datamodel import entity, label, description, claim, snak
 from RaiseWikibase.raiser import batch
 
 
-from .models import MappingConfig, CSVFileConfig, ItemMapping, StatementMapping
+from .models import MappingConfig, CSVFileConfig, ItemMapping, StatementMapping, UpdateAction
 
 from RaiseWikibase.dbconnection import DBConnection
 
@@ -30,10 +30,10 @@ class MappingProcessor:
         self.config_manager = config_manager
         self.language: str = 'en'
         self.wbi = config_manager.get_wikibase_integrator()
-        # cache of properties/items for syncing execution time
-        self.cache: dict[str, str] = {}
         self.current_dataframe: pd.DataFrame | None = None
-    
+
+        self.pids_by_labels: dict[str, str] = {}
+        self.qids_by_labels: dict[str, str] = {}
     
     def _load_mapping_config(self, mapping_path: str) -> MappingConfig:
         mapping_file = Path(mapping_path)
@@ -95,9 +95,8 @@ class MappingProcessor:
 
         list_of_label_values = self.get_label_by_column(filtered_dataframe, item_mapping.statements)
 
-        # search for statements QIDs
-        values_bulk_searcher = ItemBulkSearcher()
-        values = values_bulk_searcher.find_items_by_labels_optimized(list_of_label_values)
+        self.update_pids_by_labels(item_mapping.statements)
+        self.update_qids_by_labels(list_of_label_values)
 
         # search for items QIDs
         item_bulk_searcher = ItemBulkSearcher()
@@ -106,8 +105,27 @@ class MappingProcessor:
         # filter items not found
         filtered_dataframe = filtered_dataframe[~filtered_dataframe[item_mapping.label_column].isin(items_found.keys())]
 
+        # if item_mapping.update_action:
+        #     self.bulk_update_items(filtered_dataframe, item_mapping, values, properties_ids_by_labels, update_action)
+
         # create items
-        self.bulk_create_items(filtered_dataframe, item_mapping, values)
+        self.bulk_create_items(filtered_dataframe, item_mapping)
+
+    def update_pids_by_labels(self, statements: list[StatementMapping] | None) -> None:
+        """Update Cache of the PIDs by labels"""
+
+        db_connection = DBConnection()
+
+        statements_with_label = filter(lambda x: x.property_label is not None, statements)
+        for statement in statements_with_label:
+            property_label = statement.property_label
+            self.pids_by_labels[property_label] = db_connection.find_property_id(property_label)
+    
+    def update_qids_by_labels(self, labels: list[str]) -> None:
+        """Update Cache of the QIDs by labels"""
+        item_bulk_searcher = ItemBulkSearcher()
+        items_found = item_bulk_searcher.find_items_by_labels_optimized(labels)
+        self.qids_by_labels.update(items_found)
 
     def get_label_by_column(self, dataframe: pd.DataFrame, statements: list[StatementMapping] | None) -> list[str]:
         # retrieve all labels from statement.value_column
@@ -134,11 +152,11 @@ class MappingProcessor:
         return list_of_labels
 
 
-    def bulk_create_items(self, df: pd.DataFrame, item_mapping: ItemMapping, values: dict[str, str] | None, chunk_size: int = 1000) -> None:
+    def bulk_create_items(self, df: pd.DataFrame, item_mapping: ItemMapping, chunk_size: int = 1000) -> None:
         """Create items in chunks to avoid memory issues
         
         Args:
-            df: pandas DataFrame containing the data
+            df: pandas DataFrame containing the datareplace_all
             language: Language code for labels and descriptions
             name_column: Column name containing the item names
             description_column: Column name containing descriptions (optional)
@@ -167,20 +185,8 @@ class MappingProcessor:
                 etype='item'
             )
 
-            if values:
-                for statement in item_mapping.statements:
-                    if statement.value_column:
-                        item['claims'].update(claim(prop=statement.property_id,
-                                                    mainsnak=snak(datatype=statement.datatype,
-                                                                value=values[row[statement.value_column]],
-                                                                prop=statement.property_id,
-                                                                snaktype='value')))
-                    elif statement.value_label:
-                        item['claims'].update(claim(prop=statement.property_id,
-                                                    mainsnak=snak(datatype=statement.datatype,
-                                                                value=values[statement.value_label],
-                                                                prop=statement.property_id,
-                                                                snaktype='value')))
+            for statement in item_mapping.statements:
+                self.add_claims(item, row, statement)
 
             items.append(item)
             
@@ -212,6 +218,69 @@ class MappingProcessor:
         
         self._verify_items_created()
 
+    def add_claims(self, item: entity, row: pd.Series, statement: StatementMapping) -> None:
+        if statement.property_id:
+            property_id = statement.property_id
+        elif statement.property_label:
+            property_id = self.pids_by_labels[statement.property_label]
+        else:
+            raise ValueError(f"No property id or property label found for statement: {statement}")
+
+        if statement.datatype == 'wikibase-item':
+            if statement.value_column:
+                value = self.qids_by_labels[row[statement.value_column]]
+            elif statement.value_label:
+                value = self.qids_by_labels[statement.value_label]
+            elif statement.value:
+                value = statement.value
+            else:
+                raise ValueError(f"No value column or value label found for statement: {statement}")
+        else:
+            if statement.value_column:
+                value = row[statement.value_column]
+            elif statement.value:
+                value = statement.value
+            else:
+                raise ValueError(f"No value column or value label found for statement: {statement}")
+
+        item['claims'].update(claim(prop=property_id,
+                                    mainsnak=snak(datatype=statement.datatype,
+                                                value=value,
+                                                prop=property_id,
+                                                snaktype='value')))
+
+        
+
+    def bulk_update_items(self, update_action: UpdateAction) -> None:
+        
+        if update_action == UpdateAction.REPLACE_ALL:
+            self.bulk_replace_items()
+        elif update_action == UpdateAction.APPEND_OR_REPLACE:
+            self.bulk_append_or_replace_items()
+        elif update_action == UpdateAction.FORCE_APPEND:
+            self.bulk_force_append_items()
+        elif update_action == UpdateAction.KEEP:
+            self.bulk_keep_items()
+        elif update_action == UpdateAction.MERGE_REFS_OR_APPEND:
+            self.bulk_merge_refs_or_append_items()
+        else:
+            raise ValueError(f"Invalid update action: {update_action}")
+
+    def bulk_replace_items(self):
+        pass
+
+    def bulk_append_or_replace_items(self):
+        pass
+
+    def bulk_force_append_items(self):
+        pass
+
+    def bulk_keep_items(self):
+        pass
+
+    def bulk_merge_refs_or_append_items(self, df: pd.DataFrame, item_mapping: ItemMapping, values: dict[str, str] | None, properties_ids_by_labels: dict[str, str] | None, chunk_size: int = 1000) -> None:
+        pass
+
     def _verify_items_created(self) -> None:
         """Verify that items were actually created in the database."""
         try:
@@ -237,4 +306,3 @@ class MappingProcessor:
         except Exception as e:
             print(f"Warning: Could not verify items in database: {e}")
 
-    

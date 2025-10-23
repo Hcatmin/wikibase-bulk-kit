@@ -191,6 +191,18 @@ properties:
     datatype: "wikibase-item"
     aliases: ["estado operativo", "situación del establecimiento"]
 
+  -
+    label: "latitud"
+    description: "Latitud de un establecimiento"
+    datatype: "quantity"
+    aliases: ["coordenada de latitud"]
+
+  -
+    label: "longitud"
+    description: "Longitud de un establecimiento"
+    datatype: "quantity"
+    aliases: ["coordenada de longitud"]
+
 items:
   - label: "clase"
     description: "Instancia de una clase."

@@ -13,6 +13,8 @@ csv_files:
     encoding: "utf-8"
     delimiter: ";"
     decimal_separator: "."
+
+    update_action: "replace_all"
     
     item_mapping:
       - 
@@ -20,7 +22,7 @@ csv_files:
         description: "Comuna de Chile"
         statements:
           - 
-            property_id: "P15"
+            # property_id: "P15"
             property_label: "instancia de"
             value_label: "comuna"
             datatype: "wikibase-item"
@@ -30,7 +32,16 @@ csv_files:
 
         statements:
           - 
-            property_id: "P2"
+            # property_id: "P2"
             property_label: "comuna"
             value_column: "NOM_COM_RBD"
             datatype: "wikibase-item"
+          - 
+            property_label: "latitud"
+            value_column: "LATITUD"
+            datatype: "quantity"
+          - 
+            property_label: "longitud"
+            value_column: "LONGITUD"
+            datatype: "quantity"
+          
