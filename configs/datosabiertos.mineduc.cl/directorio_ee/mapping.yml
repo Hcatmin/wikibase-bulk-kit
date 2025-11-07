@@ -27,6 +27,7 @@ csv_files:
             value_label: "comuna"
             datatype: "wikibase-item"
       - 
+        update_action: "replace_all"
         label_column: "NOM_RBD"
         description: "Establecimiento educativo en Chile"
 

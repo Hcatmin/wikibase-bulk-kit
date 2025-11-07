@@ -92,24 +92,28 @@ class MappingProcessor:
     def process_item_mapping(self, item_mapping: ItemMapping) -> None:
         # filter only needed columns
         filtered_dataframe = self.filter_dataframe(self.current_dataframe, item_mapping)
-
         list_of_label_values = self.get_label_by_column(filtered_dataframe, item_mapping.statements)
 
         self.update_pids_by_labels(item_mapping.statements)
-        self.update_qids_by_labels(list_of_label_values)
+        item_bulk_searcher = ItemBulkSearcher()
+        items_found = item_bulk_searcher.find_items_by_labels_optimized(list_of_label_values)
+        self.qids_by_labels.update(items_found)
+
 
         # search for items QIDs
         item_bulk_searcher = ItemBulkSearcher()
-        items_found = item_bulk_searcher.find_items_by_labels_optimized(filtered_dataframe[item_mapping.label_column].tolist())
+        items_found = item_bulk_searcher.find_items_by_labels_optimized(
+            filtered_dataframe[item_mapping.label_column].tolist()
+        )
 
-        # filter items not found
-        filtered_dataframe = filtered_dataframe[~filtered_dataframe[item_mapping.label_column].isin(items_found.keys())]
-
-        # if item_mapping.update_action:
-        #     self.bulk_update_items(filtered_dataframe, item_mapping, values, properties_ids_by_labels, update_action)
+        # update items
+        if item_mapping.update_action:
+            df_items_found = filtered_dataframe[filtered_dataframe[item_mapping.label_column].isin(items_found.keys())]
+            self.bulk_update_items(df_items_found, item_mapping)
 
         # create items
-        self.bulk_create_items(filtered_dataframe, item_mapping)
+        df_items_not_found = filtered_dataframe[~filtered_dataframe[item_mapping.label_column].isin(items_found.keys())]
+        self.bulk_create_items(df_items_not_found, item_mapping)
 
     def update_pids_by_labels(self, statements: list[StatementMapping] | None) -> None:
         """Update Cache of the PIDs by labels"""
@@ -251,34 +255,128 @@ class MappingProcessor:
 
         
 
-    def bulk_update_items(self, update_action: UpdateAction) -> None:
-        
+    def bulk_update_items(self, df: pd.DataFrame, item_mapping: ItemMapping) -> None:
+        update_action = item_mapping.update_action
+
         if update_action == UpdateAction.REPLACE_ALL:
-            self.bulk_replace_items()
+            self.bulk_replace_items(df, item_mapping)
         elif update_action == UpdateAction.APPEND_OR_REPLACE:
-            self.bulk_append_or_replace_items()
+            self.bulk_append_or_replace_items(df, item_mapping)
         elif update_action == UpdateAction.FORCE_APPEND:
-            self.bulk_force_append_items()
+            self.bulk_force_append_items(df, item_mapping)
         elif update_action == UpdateAction.KEEP:
-            self.bulk_keep_items()
+            self.bulk_keep_items(df, item_mapping)
         elif update_action == UpdateAction.MERGE_REFS_OR_APPEND:
-            self.bulk_merge_refs_or_append_items()
+            self.bulk_merge_refs_or_append_items(df, item_mapping)
         else:
             raise ValueError(f"Invalid update action: {update_action}")
 
-    def bulk_replace_items(self):
-        pass
+    def bulk_replace_items(
+        self, 
+        items_to_update: pd.DataFrame, 
+        item_mapping: ItemMapping,
+        chunk_size: int = 1000
+    ) -> None:
+        if items_to_update.empty:
+            return
+
+        items = []
+
+        item_bulk_searcher = ItemBulkSearcher()
+        qids_to_update = item_bulk_searcher.find_items_by_labels_optimized(
+            items_to_update[item_mapping.label_column].tolist()
+        )
+        
+        for i, (_, row) in enumerate(items_to_update.iterrows()):
+            # Get the QID for this item from cache
+            item_label = str(row[item_mapping.label_column])
+            item_qid = qids_to_update.get(item_label)
+            
+            # Skip if QID not found (shouldn't happen, but safety check)
+            if not item_qid:
+                continue
+            
+            # Create item entity with existing QID
+            labels = label(self.language, item_label)
+            
+            # Handle description if column is provided
+            if (item_mapping.description and 
+                item_mapping.description in items_to_update.columns):
+                item_description = str(row[item_mapping.description])
+                descriptions = description(self.language, item_description)
+            else:
+                descriptions = {}
+            
+            item = entity(
+                labels=labels,
+                aliases={},
+                descriptions=descriptions,
+                claims={},
+                etype='item'
+            )
+            
+            # Set the existing QID
+            item['id'] = item_qid
+            
+            # Replace all claims (REPLACE_ALL action)
+            if item_mapping.statements:
+                for statement in item_mapping.statements:
+                    self.add_claims(item, row, statement)
+
+            items.append(item)
+            
+            # Process in chunks
+            if len(items) >= chunk_size:
+                try:
+                    print(
+                        f"Updating batch of {len(items)} items "
+                        f"(total: {i+1})..."
+                    )
+                    result = batch('wikibase-item', items, new=False)
+                    print(
+                        f"✓ Successfully updated batch of {len(items)} items "
+                        f"(total: {i+1})"
+                    )
+                except Exception as e:
+                    print(
+                        f"✗ Error updating batch of {len(items)} items: {e}"
+                    )
+                    import traceback
+                    traceback.print_exc()
+                    raise
+                items = []
+        
+        # Process remaining items
+        if items:
+            try:
+                print(f"Updating final batch of {len(items)} items...")
+                result = batch('wikibase-item', items, new=False)
+                print(
+                    f"✓ Successfully updated final batch of "
+                    f"{len(items)} items"
+                )
+            except Exception as e:
+                print(
+                    f"✗ Error updating final batch of {len(items)} items: {e}"
+                )
+                import traceback
+                traceback.print_exc()
+                raise
 
     def bulk_append_or_replace_items(self):
+        # TODO: Implement this
         pass
 
     def bulk_force_append_items(self):
+        # TODO: Implement this
         pass
 
     def bulk_keep_items(self):
+        # TODO: Implement this
         pass
 
-    def bulk_merge_refs_or_append_items(self, df: pd.DataFrame, item_mapping: ItemMapping, values: dict[str, str] | None, properties_ids_by_labels: dict[str, str] | None, chunk_size: int = 1000) -> None:
+    def bulk_merge_refs_or_append_items(self):
+        # TODO: Implement this
         pass
 
     def _verify_items_created(self) -> None:
