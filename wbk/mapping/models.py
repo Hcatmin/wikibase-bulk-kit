@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, Field
 from enum import Enum
+from typing import Union
 
 class UpdateAction(str, Enum):
     APPEND_OR_REPLACE = "append_or_replace"
@@ -10,19 +11,24 @@ class UpdateAction(str, Enum):
     REPLACE_ALL = "replace_all"
     MERGE_REFS_OR_APPEND = "merge_refs_or_append"
 
+# Value specification types
+ValueSpec = Union[
+    str,  # Shorthand: column name
+    dict,  # Explicit: {"column": "col_name"} or {"value": "static"} or {"label": "label_name"}
+    list  # Tuple: [{"column": "col1"}, {"value": "static"}, ...]
+]
+
 class ClaimMapping(BaseModel):
-    property_id: str = Field(..., description="Property ID")
-    property_label: str = Field(..., description="Property label")
-    value_column: str = Field(..., description="Column that contains the value")
+    property_id: str | None = Field(None, description="Property ID")
+    property_label: str | None = Field(None, description="Property label")
+    value: ValueSpec | None = Field(None, description="Value specification: column name (str), explicit dict, or tuple list")
     datatype: str = Field(..., description="Datatype")
 
 
 class StatementMapping(BaseModel):
     property_id: str | None = Field(None, description="Property ID")
     property_label: str | None = Field(None, description="Property label")
-    value_column: str | None = Field(None, description="Column on the table that contains the label for the value")
-    value_label: str | None = Field(None, description="Static label for the value (is not on the table)")
-    value: str | None = Field(None, description="Static value for the statement")
+    value: ValueSpec | None = Field(None, description="Value specification: column name (str), explicit dict, or tuple list")
     datatype: str = Field(..., description="Datatype")
     qualifiers: list[ClaimMapping] | None = Field(default_factory=list, description="Qualifiers")
     references: list[ClaimMapping] | None = Field(default_factory=list, description="References")

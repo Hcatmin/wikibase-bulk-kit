@@ -11,7 +11,7 @@ from RaiseWikibase.datamodel import entity, label, description, claim, snak
 from RaiseWikibase.raiser import batch
 
 
-from .models import MappingConfig, CSVFileConfig, ItemMapping, StatementMapping, UpdateAction
+from .models import MappingConfig, CSVFileConfig, ItemMapping, StatementMapping, UpdateAction, ClaimMapping
 
 from RaiseWikibase.dbconnection import DBConnection
 
@@ -74,16 +74,126 @@ class MappingProcessor:
             print(f"Processing item mapping: {item_mapping.label_column}")
             self.process_item_mapping(item_mapping)
 
-    def filter_dataframe(self, dataframe: pd.DataFrame, item_mapping: ItemMapping) -> pd.DataFrame:
-        """Filter the dataframe to only include the columns needed for the item mapping"""
-        statements = item_mapping.statements
-        statements_with_column = filter(lambda x: x.value_column is not None, statements)
-
-        columns = [statement.value_column for statement in statements_with_column]
-        dataframe = dataframe[[item_mapping.label_column] + columns]
+    def _extract_columns_from_value_spec(
+        self, 
+        value_spec: str | dict | list | None
+    ) -> list[str]:
+        """Extract column names from a value specification.
         
-        dataframe = dataframe.dropna(subset=[item_mapping.label_column])
+        Args:
+            value_spec: Value specification (str, dict, or list)
+            
+        Returns:
+            List of column names referenced in the value spec
+        """
+        columns = []
+        
+        if value_spec is None:
+            return columns
+        
+        if isinstance(value_spec, str):
+            # Shorthand: treat as column name
+            columns.append(value_spec)
+        elif isinstance(value_spec, dict):
+            if 'column' in value_spec:
+                columns.append(value_spec['column'])
+        elif isinstance(value_spec, list):
+            # Recursively extract columns from each element
+            for elem in value_spec:
+                columns.extend(self._extract_columns_from_value_spec(elem))
+        
+        return columns
 
+    def _extract_labels_from_value_spec(
+        self,
+        value_spec: str | dict | list | None,
+        datatype: str,
+        dataframe: pd.DataFrame | None = None
+    ) -> list[str]:
+        """Extract labels/values from a value specification for wikibase-item lookup.
+        
+        Args:
+            value_spec: Value specification (str, dict, or list)
+            datatype: The datatype of the property
+            dataframe: Optional dataframe to extract column values from
+            
+        Returns:
+            List of labels/values (only for wikibase-item datatype)
+        """
+        labels = []
+        
+        if value_spec is None:
+            return labels
+        
+        # Only extract labels for wikibase-item datatype
+        if datatype != 'wikibase-item':
+            return labels
+        
+        if isinstance(value_spec, str):
+            # Shorthand: treat as column name
+            if dataframe is not None and value_spec in dataframe.columns:
+                labels.extend(
+                    dataframe[value_spec].drop_duplicates().dropna().tolist()
+                )
+        elif isinstance(value_spec, dict):
+            if 'column' in value_spec:
+                if dataframe is not None and value_spec['column'] in dataframe.columns:
+                    labels.extend(
+                        dataframe[value_spec['column']]
+                        .drop_duplicates()
+                        .dropna()
+                        .tolist()
+                    )
+            elif 'label' in value_spec:
+                labels.append(value_spec['label'])
+            elif 'value' in value_spec:
+                # Static value - if it's not a QID, treat as label
+                val = value_spec['value']
+                if not (val.startswith('Q') and val[1:].isdigit()):
+                    labels.append(val)
+        elif isinstance(value_spec, list):
+            # For tuples, extract labels from each element
+            for elem in value_spec:
+                labels.extend(
+                    self._extract_labels_from_value_spec(elem, datatype, dataframe)
+                )
+        
+        return labels
+
+    def filter_dataframe(
+        self, 
+        dataframe: pd.DataFrame, 
+        item_mapping: ItemMapping
+    ) -> pd.DataFrame:
+        """Filter the dataframe to only include the columns needed for the item mapping"""
+        columns = []
+        
+        if item_mapping.statements:
+            for statement in item_mapping.statements:
+                # Extract columns from statement value
+                columns.extend(
+                    self._extract_columns_from_value_spec(statement.value)
+                )
+                
+                # Extract columns from qualifiers
+                if statement.qualifiers:
+                    for qual in statement.qualifiers:
+                        columns.extend(
+                            self._extract_columns_from_value_spec(qual.value)
+                        )
+                
+                # Extract columns from references
+                if statement.references:
+                    for ref in statement.references:
+                        columns.extend(
+                            self._extract_columns_from_value_spec(ref.value)
+                        )
+        
+        # Remove duplicates and ensure label_column is included
+        all_columns = list(set([item_mapping.label_column] + columns))
+        
+        dataframe = dataframe[all_columns]
+        dataframe = dataframe.dropna(subset=[item_mapping.label_column])
         filtered_dataframe = dataframe.drop_duplicates()
         del dataframe
         gc.collect()
@@ -92,28 +202,22 @@ class MappingProcessor:
     def process_item_mapping(self, item_mapping: ItemMapping) -> None:
         # filter only needed columns
         filtered_dataframe = self.filter_dataframe(self.current_dataframe, item_mapping)
-        list_of_label_values = self.get_label_by_column(filtered_dataframe, item_mapping.statements)
+        list_of_label_values = self.get_label_by_column(filtered_dataframe, item_mapping)
 
         self.update_pids_by_labels(item_mapping.statements)
-        item_bulk_searcher = ItemBulkSearcher()
-        items_found = item_bulk_searcher.find_items_by_labels_optimized(list_of_label_values)
-        self.qids_by_labels.update(items_found)
-
-
-        # search for items QIDs
-        item_bulk_searcher = ItemBulkSearcher()
-        items_found = item_bulk_searcher.find_items_by_labels_optimized(
-            filtered_dataframe[item_mapping.label_column].tolist()
-        )
+        self.update_qids_by_labels(list_of_label_values)
 
         # update items
         if item_mapping.update_action:
-            df_items_found = filtered_dataframe[filtered_dataframe[item_mapping.label_column].isin(items_found.keys())]
+            df_items_found = filtered_dataframe[
+                filtered_dataframe[item_mapping.label_column].isin(self.qids_by_labels.keys())
+            ]
             self.bulk_update_items(df_items_found, item_mapping)
-
-        # create items
-        df_items_not_found = filtered_dataframe[~filtered_dataframe[item_mapping.label_column].isin(items_found.keys())]
-        self.bulk_create_items(df_items_not_found, item_mapping)
+        else: # create items
+            df_items_not_found = filtered_dataframe[
+                ~filtered_dataframe[item_mapping.label_column].isin(self.qids_by_labels.keys())
+            ]
+            self.bulk_create_items(df_items_not_found, item_mapping)
 
     def update_pids_by_labels(self, statements: list[StatementMapping] | None) -> None:
         """Update Cache of the PIDs by labels"""
@@ -131,30 +235,61 @@ class MappingProcessor:
         items_found = item_bulk_searcher.find_items_by_labels_optimized(labels)
         self.qids_by_labels.update(items_found)
 
-    def get_label_by_column(self, dataframe: pd.DataFrame, statements: list[StatementMapping] | None) -> list[str]:
-        # retrieve all labels from statement.value_column
-
-        if statements is None:
+    def get_label_by_column(
+        self, 
+        dataframe: pd.DataFrame, 
+        item_mapping: ItemMapping
+    ) -> list[str]:
+        """Retrieve all labels from value specifications for wikibase-item lookups."""
+        label_column = item_mapping.label_column
+        statements = item_mapping.statements
+        
+        if label_column is None and statements is None:
             return []
 
-        # filter statement that doesnt have value_column 
-        statements_with_column = filter(lambda x: x.value_column is not None, statements)
-
-        columns = [statement.value_column for statement in statements_with_column]
-
         list_of_labels = []
-        for col in columns:
-            column = dataframe[col]
-            column = column.drop_duplicates()
-            column = column.dropna()
-            column = column.tolist()
-            list_of_labels += column
 
-        statement_with_label = filter(lambda x: x.value_label is not None, statements)
-        list_of_labels += [statement.value_label for statement in statement_with_label]
+        # Get labels from label_column
+        if label_column and label_column in dataframe.columns:
+            list_of_labels += (
+                dataframe[label_column].drop_duplicates().dropna().tolist()
+            )
+
+        # Extract labels from statements, qualifiers, and references
+        if statements:
+            for statement in statements:
+                # Extract labels from statement value
+                list_of_labels.extend(
+                    self._extract_labels_from_value_spec(
+                        statement.value, 
+                        statement.datatype, 
+                        dataframe
+                    )
+                )
+                
+                # Extract labels from qualifiers
+                if statement.qualifiers:
+                    for qual in statement.qualifiers:
+                        list_of_labels.extend(
+                            self._extract_labels_from_value_spec(
+                                qual.value,
+                                qual.datatype,
+                                dataframe
+                            )
+                        )
+                
+                # Extract labels from references
+                if statement.references:
+                    for ref in statement.references:
+                        list_of_labels.extend(
+                            self._extract_labels_from_value_spec(
+                                ref.value,
+                                ref.datatype,
+                                dataframe
+                            )
+                        )
 
         return list_of_labels
-
 
     def bulk_create_items(self, df: pd.DataFrame, item_mapping: ItemMapping, chunk_size: int = 1000) -> None:
         """Create items in chunks to avoid memory issues
@@ -222,38 +357,177 @@ class MappingProcessor:
         
         self._verify_items_created()
 
-    def add_claims(self, item: entity, row: pd.Series, statement: StatementMapping) -> None:
+    def _resolve_value(
+        self,
+        value_spec: str | dict | list | None,
+        row: pd.Series,
+        datatype: str
+    ) -> str | tuple:
+        """Resolve a value specification to an actual value or tuple.
+        
+        Args:
+            value_spec: Value specification (str, dict, or list)
+            row: The pandas Series row containing data
+            datatype: The datatype of the property
+            
+        Returns:
+            Resolved value (str for simple types, tuple for complex types)
+        """
+        if value_spec is None:
+            raise ValueError(f"No value specified for datatype {datatype}")
+        
+        # Helper to resolve a single value spec element
+        def resolve_element(elem):
+            if isinstance(elem, str):
+                # Shorthand: treat as column name
+                return row[elem]
+            elif isinstance(elem, dict):
+                if 'column' in elem:
+                    return row[elem['column']]
+                elif 'value' in elem:
+                    return elem['value']
+                elif 'label' in elem:
+                    # For wikibase-item, lookup QID by label
+                    if datatype == 'wikibase-item':
+                        return self.qids_by_labels[elem['label']]
+                    else:
+                        return elem['label']
+                else:
+                    raise ValueError(
+                        f"Invalid value spec dict: {elem}. "
+                        f"Must have 'column', 'value', or 'label' key"
+                    )
+            else:
+                raise ValueError(
+                    f"Invalid value spec element: {elem}. "
+                    f"Must be str or dict"
+                )
+        
+        # If it's a list, construct a tuple
+        if isinstance(value_spec, list):
+            resolved_elements = [resolve_element(elem) for elem in value_spec]
+            return tuple(resolved_elements)
+        
+        # Single value - resolve it
+        resolved = resolve_element(value_spec)
+        
+        # For wikibase-item datatype, if we got a string (label), 
+        # look it up in qids_by_labels
+        if datatype == 'wikibase-item' and isinstance(resolved, str):
+            # Check if it's already a QID (starts with Q)
+            if resolved.startswith('Q') and resolved[1:].isdigit():
+                return resolved
+            # Otherwise, treat as label and lookup
+            return self.qids_by_labels.get(resolved, resolved)
+        
+        return resolved
+
+    def _create_snak_from_claim_mapping(
+        self, 
+        claim_mapping: ClaimMapping, 
+        row: pd.Series
+    ) -> dict:
+        """Create a snak from a ClaimMapping.
+        
+        Args:
+            claim_mapping: The ClaimMapping to convert
+            row: The pandas Series row containing data
+            
+        Returns:
+            A snak dictionary
+        """
+        # Get property ID
+        if claim_mapping.property_id:
+            prop_id = claim_mapping.property_id
+        elif claim_mapping.property_label:
+            prop_id = self.pids_by_labels[claim_mapping.property_label]
+        else:
+            raise ValueError(
+                f"No property id or property label found for "
+                f"claim mapping: {claim_mapping}"
+            )
+        
+        # Resolve value using unified value field
+        value = self._resolve_value(
+            claim_mapping.value,
+            row,
+            claim_mapping.datatype
+        )
+        
+        return snak(
+            datatype=claim_mapping.datatype,
+            value=value,
+            prop=prop_id,
+            snaktype='value'
+        )
+
+    def add_claims(
+        self, 
+        item: entity, 
+        row: pd.Series, 
+        statement: StatementMapping
+    ) -> None:
         if statement.property_id:
             property_id = statement.property_id
         elif statement.property_label:
             property_id = self.pids_by_labels[statement.property_label]
         else:
-            raise ValueError(f"No property id or property label found for statement: {statement}")
+            raise ValueError(
+                f"No property id or property label found for "
+                f"statement: {statement}"
+            )
 
-        if statement.datatype == 'wikibase-item':
-            if statement.value_column:
-                value = self.qids_by_labels[row[statement.value_column]]
-            elif statement.value_label:
-                value = self.qids_by_labels[statement.value_label]
-            elif statement.value:
-                value = statement.value
-            else:
-                raise ValueError(f"No value column or value label found for statement: {statement}")
-        else:
-            if statement.value_column:
-                value = row[statement.value_column]
-            elif statement.value:
-                value = statement.value
-            else:
-                raise ValueError(f"No value column or value label found for statement: {statement}")
+        # Resolve value using unified value field
+        value = self._resolve_value(
+            statement.value,
+            row,
+            statement.datatype
+        )
 
-        item['claims'].update(claim(prop=property_id,
-                                    mainsnak=snak(datatype=statement.datatype,
-                                                value=value,
-                                                prop=property_id,
-                                                snaktype='value')))
-
+        if any(map(lambda x: x == ' ', value)):
+            return
+            
+        # Process qualifiers
+        qualifiers = []
+        if statement.qualifiers:
+            for qualifier_mapping in statement.qualifiers:
+                qualifier_snak = self._create_snak_from_claim_mapping(
+                    qualifier_mapping, row
+                )
+                qualifiers.append(qualifier_snak)
         
+        # Process references
+        references = []
+        if statement.references:
+            for reference_mapping in statement.references:
+                reference_snak = self._create_snak_from_claim_mapping(
+                    reference_mapping, row
+                )
+                references.append(reference_snak)
+
+        # Create claim with qualifiers and references
+        mainsnak_dict = snak(
+            datatype=statement.datatype,
+            value=value,
+            prop=property_id,
+            snaktype='value'
+        )
+        
+        # Handle rank if provided
+        rank = statement.rank if statement.rank else 'normal'
+        
+        claim_dict = claim(
+            prop=property_id,
+            mainsnak=mainsnak_dict,
+            qualifiers=qualifiers,
+            references=references
+        )
+        
+        # Update rank if provided
+        if statement.rank and statement.rank != 'normal':
+            claim_dict[property_id][0]['rank'] = statement.rank
+        
+        item['claims'].update(claim_dict)
 
     def bulk_update_items(self, df: pd.DataFrame, item_mapping: ItemMapping) -> None:
         update_action = item_mapping.update_action

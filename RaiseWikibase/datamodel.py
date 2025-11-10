@@ -137,6 +137,12 @@ def snak(datatype='', value='', prop='', snaktype='value'):
         }
     elif datatype == 'globe-coordinate':
         latitude, longitude, precision, globe = value
+
+        if isinstance(latitude, str):
+            latitude = float(latitude.replace(',', '.'))
+        if isinstance(longitude, str):
+            longitude = float(longitude.replace(',', '.'))
+
         datavalue = {
             'value': {
                 'latitude': latitude,
