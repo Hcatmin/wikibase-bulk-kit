@@ -1,9 +1,10 @@
 """Mapping processor for transforming CSV data into Wikibase statements."""
 
+import copy
 import gc
 import yaml
 from pathlib import Path
-
+from pydantic import BaseModel
 
 from ..config.manager import ConfigManager
 import pandas as pd
@@ -29,7 +30,6 @@ class MappingProcessor:
         """
         self.config_manager = config_manager
         self.language: str = 'en'
-        self.wbi = config_manager.get_wikibase_integrator()
         self.current_dataframe: pd.DataFrame | None = None
 
         self.pids_by_labels: dict[str, str] = {}
@@ -221,12 +221,26 @@ class MappingProcessor:
 
     def update_pids_by_labels(self, statements: list[StatementMapping] | None) -> None:
         """Update Cache of the PIDs by labels"""
+        def filter_by_label(schema: list[BaseModel] | None) -> list[str]:
+            if schema is None:
+                return []
+            return filter(lambda x: x.property_label is not None, schema)
 
         db_connection = DBConnection()
 
-        statements_with_label = filter(lambda x: x.property_label is not None, statements)
+        statements_with_label = filter_by_label(statements)
         for statement in statements_with_label:
             property_label = statement.property_label
+            self.pids_by_labels[property_label] = db_connection.find_property_id(property_label)
+
+            qualifiers_with_label = filter_by_label(statement.qualifiers)
+            for qualifier in qualifiers_with_label:
+                property_label = qualifier.property_label
+                self.pids_by_labels[property_label] = db_connection.find_property_id(property_label)
+
+            references_with_label = filter_by_label(statement.references)
+            for reference in references_with_label:
+                property_label = reference.property_label
             self.pids_by_labels[property_label] = db_connection.find_property_id(property_label)
     
     def update_qids_by_labels(self, labels: list[str]) -> None:
@@ -637,9 +651,221 @@ class MappingProcessor:
                 traceback.print_exc()
                 raise
 
-    def bulk_append_or_replace_items(self):
-        # TODO: Implement this
-        pass
+    def bulk_append_or_replace_items(
+        self,
+        items_to_update: pd.DataFrame,
+        item_mapping: ItemMapping,
+        chunk_size: int = 1000
+    ) -> None:
+        """Update items using APPEND_OR_REPLACE action.
+        
+        For each statement in the mapping:
+        - If a claim with the same property+value+qualifiers exists: 
+          replace it (update references/qualifiers)
+        - If no matching claim exists: append the new claim
+        - Preserves all other claims not in the mapping
+        
+        Args:
+            items_to_update: DataFrame with items to update
+            item_mapping: Mapping configuration for items
+            chunk_size: Number of items to process in each batch
+        """
+        if items_to_update.empty:
+            return
+
+        items = []
+        item_bulk_searcher = ItemBulkSearcher()
+        items_by_label = item_bulk_searcher.find_items_by_labels_with_data(
+            items_to_update[item_mapping.label_column].tolist(),
+            language=self.language
+        )
+        
+        # Import utility functions for claim comparison
+        from RaiseWikibase.utils import is_same_claim
+        
+        for i, (_, row) in enumerate(items_to_update.iterrows()):
+            # Get the item label
+            item_label = str(row[item_mapping.label_column])
+            
+            # Get existing item from the bulk search results
+            existing_item = items_by_label.get(item_label)
+            
+            # Skip if item not found
+            if not existing_item:
+                continue
+            
+            # Make a copy to avoid modifying the cached version
+            existing_item = copy.deepcopy(existing_item)
+            
+            # Update labels and descriptions
+            existing_item['labels'] = label(self.language, item_label)
+            
+            if (item_mapping.description and 
+                item_mapping.description in items_to_update.columns):
+                item_description = str(row[item_mapping.description])
+                existing_item['descriptions'] = description(
+                    self.language, item_description
+                )
+            
+            # Process each statement in the mapping
+            if item_mapping.statements:
+                for statement in item_mapping.statements:
+                    # Create the new claim
+                    new_claim_dict = self._create_claim_dict_from_statement(
+                        statement, row
+                    )
+                    
+                    if not new_claim_dict:
+                        continue
+                    
+                    # Get property ID for this statement
+                    if statement.property_id:
+                        property_id = statement.property_id
+                    elif statement.property_label:
+                        property_id = self.pids_by_labels[
+                            statement.property_label
+                        ]
+                    else:
+                        continue
+                    
+                    # Extract the new claim from the dict
+                    new_claim = new_claim_dict[property_id][0]
+                    
+                    # Check if property exists in existing claims
+                    if property_id in existing_item['claims']:
+                        # Look for matching claim
+                        existing_claims = existing_item['claims'][property_id]
+                        claim_found = False
+                        
+                        for idx, existing_claim in enumerate(existing_claims):
+                            if is_same_claim(new_claim, existing_claim):
+                                # Replace the existing claim, preserving the ID
+                                if 'id' in existing_claim and existing_claim['id']:
+                                    new_claim['id'] = existing_claim['id']
+                                existing_claims[idx] = new_claim
+                                claim_found = True
+                                break
+                        
+                        if not claim_found:
+                            # Append new claim
+                            existing_claims.append(new_claim)
+                    else:
+                        # Property doesn't exist, add it
+                        existing_item['claims'][property_id] = [new_claim]
+            
+            items.append(existing_item)
+            
+            # Process in chunks
+            if len(items) >= chunk_size:
+                try:
+                    print(
+                        f"Updating batch of {len(items)} items "
+                        f"(total: {i+1})..."
+                    )
+                    result = batch('wikibase-item', items, new=False)
+                    print(
+                        f"✓ Successfully updated batch of {len(items)} items "
+                        f"(total: {i+1})"
+                    )
+                except Exception as e:
+                    print(
+                        f"✗ Error updating batch of {len(items)} items: {e}"
+                    )
+                    import traceback
+                    traceback.print_exc()
+                    raise
+                items = []
+        
+        # Process remaining items
+        if items:
+            try:
+                print(f"Updating final batch of {len(items)} items...")
+                result = batch('wikibase-item', items, new=False)
+                print(
+                    f"✓ Successfully updated final batch of "
+                    f"{len(items)} items"
+                )
+            except Exception as e:
+                print(
+                    f"✗ Error updating final batch of {len(items)} items: {e}"
+                )
+                import traceback
+                traceback.print_exc()
+                raise
+
+
+    def _create_claim_dict_from_statement(
+        self,
+        statement: StatementMapping,
+        row: pd.Series
+    ) -> dict | None:
+        """Create a claim dict from a StatementMapping.
+        
+        Args:
+            statement: Statement mapping configuration
+            row: DataFrame row with data
+            
+        Returns:
+            Claim dict in RaiseWikibase format, or None if invalid
+        """
+        if statement.property_id:
+            property_id = statement.property_id
+        elif statement.property_label:
+            property_id = self.pids_by_labels[statement.property_label]
+        else:
+            return None
+        
+        # Resolve value
+        try:
+            value = self._resolve_value(
+                statement.value,
+                row,
+                statement.datatype
+            )
+        except ValueError:
+            return None
+        
+        if any(map(lambda x: x == ' ', value)):
+            return None
+        
+        # Process qualifiers
+        qualifiers = []
+        if statement.qualifiers:
+            for qualifier_mapping in statement.qualifiers:
+                qualifier_snak = self._create_snak_from_claim_mapping(
+                    qualifier_mapping, row
+                )
+                qualifiers.append(qualifier_snak)
+        
+        # Process references
+        references = []
+        if statement.references:
+            for reference_mapping in statement.references:
+                reference_snak = self._create_snak_from_claim_mapping(
+                    reference_mapping, row
+                )
+                references.append(reference_snak)
+        
+        # Create claim
+        mainsnak_dict = snak(
+            datatype=statement.datatype,
+            value=value,
+            prop=property_id,
+            snaktype='value'
+        )
+        
+        claim_dict = claim(
+            prop=property_id,
+            mainsnak=mainsnak_dict,
+            qualifiers=qualifiers,
+            references=references
+        )
+        
+        # Update rank if provided
+        if statement.rank and statement.rank != 'normal':
+            claim_dict[property_id][0]['rank'] = statement.rank
+        
+        return claim_dict
 
     def bulk_force_append_items(self):
         # TODO: Implement this
