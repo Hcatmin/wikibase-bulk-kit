@@ -11,6 +11,8 @@ import pandas as pd
 from RaiseWikibase.datamodel import entity, label, description, claim, snak
 from RaiseWikibase.raiser import batch
 
+from pydantic.types import Any
+
 
 from .models import MappingConfig, CSVFileConfig, ItemMapping, StatementMapping, UpdateAction, ClaimMapping
 
@@ -61,18 +63,11 @@ class MappingProcessor:
                 delimiter=csv_file_config.delimiter,
                 decimal=csv_file_config.decimal_separator
             )
-            self.process_item_mappings(csv_file_config)
 
-    def process_item_mappings(self, csv_file_config: CSVFileConfig) -> None:
-        """Process the item mappings.
-        
-        Args:
-            csv_file_config: Configuration for the CSV file
-        """
+            for item_mapping in csv_file_config.item_mapping:
+                print(f"Processing item mapping: {item_mapping.label_column}")
+                self.process_item_mapping(item_mapping)
 
-        for item_mapping in csv_file_config.item_mapping:
-            print(f"Processing item mapping: {item_mapping.label_column}")
-            self.process_item_mapping(item_mapping)
 
     def _extract_columns_from_value_spec(
         self, 
@@ -194,6 +189,7 @@ class MappingProcessor:
         
         dataframe = dataframe[all_columns]
         dataframe = dataframe.dropna(subset=[item_mapping.label_column])
+        dataframe[item_mapping.label_column] = dataframe[item_mapping.label_column].str.strip()
         filtered_dataframe = dataframe.drop_duplicates()
         del dataframe
         gc.collect()
@@ -376,7 +372,7 @@ class MappingProcessor:
         value_spec: str | dict | list | None,
         row: pd.Series,
         datatype: str
-    ) -> str | tuple:
+    ) -> Any | tuple:
         """Resolve a value specification to an actual value or tuple.
         
         Args:
@@ -498,9 +494,6 @@ class MappingProcessor:
             statement.datatype
         )
 
-        if any(map(lambda x: x == ' ', value)):
-            return
-            
         # Process qualifiers
         qualifiers = []
         if statement.qualifiers:
@@ -526,6 +519,9 @@ class MappingProcessor:
             prop=property_id,
             snaktype='value'
         )
+
+        if mainsnak_dict is None:
+            return
         
         # Handle rank if provided
         rank = statement.rank if statement.rank else 'normal'
@@ -578,8 +574,6 @@ class MappingProcessor:
         for i, (_, row) in enumerate(items_to_update.iterrows()):
             # Get the QID for this item from cache
             item_label = str(row[item_mapping.label_column])
-            if item_label == "ESCUELA BASICA":
-                pass
             item_qid = qids_to_update.get(item_label)
             
             # Skip if QID not found (shouldn't happen, but safety check)

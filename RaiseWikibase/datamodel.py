@@ -1,4 +1,5 @@
 import uuid
+import re
 
 
 def label(language='en', value=''):
@@ -67,6 +68,9 @@ def snak(datatype='', value='', prop='', snaktype='value'):
     :return snak: a template dictionary with a snak
     :rtype snak: dict
     """
+    if isinstance(value, tuple) and len(value) == 1:
+        value = value[0]
+
     if datatype in ['', 'string', 'math', 'external-id', 'url', 'commonsMedia',
                     'localMedia', 'geo-shape', 'musical-notation', 'tabular-data']:
         datavalue = {
@@ -122,9 +126,32 @@ def snak(datatype='', value='', prop='', snaktype='value'):
             lower_bound = None
         else:
             val = value
-            unit = ''
+            unit = '1'
             upper_bound = None
             lower_bound = None
+
+        try:
+            # Convert to float to handle int, float, and numeric strings
+            if isinstance(val, str):
+                val = val.replace(',', '.')
+            
+            num_val = float(val)
+            # Format with leading sign: positive gets "+", negative keeps "-"
+            # Format integers without decimal point
+            if num_val == int(num_val):
+                # It's a whole number
+                if num_val >= 0:
+                    val = "+" + str(int(num_val))
+                else:
+                    val = str(int(num_val))
+            else:
+                # It has decimal places
+                if num_val >= 0:
+                    val = "+" + str(num_val)
+                else:
+                    val = str(num_val)
+        except (ValueError, TypeError):
+            return None
         
         datavalue = {
             'value': {
@@ -139,8 +166,14 @@ def snak(datatype='', value='', prop='', snaktype='value'):
         latitude, longitude, precision, globe = value
 
         if isinstance(latitude, str):
+            latitude = latitude.strip()
+            if latitude == '':
+                return None
             latitude = float(latitude.replace(',', '.'))
         if isinstance(longitude, str):
+            longitude = longitude.strip()
+            if longitude == '':
+                return None
             longitude = float(longitude.replace(',', '.'))
 
         datavalue = {

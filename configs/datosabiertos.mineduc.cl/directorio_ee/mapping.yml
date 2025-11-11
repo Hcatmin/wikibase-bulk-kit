@@ -3,8 +3,8 @@ description: "Mapping configuration for Chilean educational establishments from 
 language: "es"
 
 encoding: "utf-8"
-delimiter: ","
-decimal_separator: "."
+delimiter: ";"
+decimal_separator: ","
 
 csv_files:
   - 
@@ -12,45 +12,43 @@ csv_files:
     # https://datosabiertos.mineduc.cl/directorio-de-establecimientos-educacionales/
     encoding: "utf-8"
     delimiter: ";"
-    decimal_separator: "."
+    decimal_separator: ","
 
     update_action: "replace_all"
     
     item_mapping:
       - 
-        update_action: "replace_all"
+        # update_action: "replace_all"
         label_column: "NOM_COM_RBD"
         description: "Comuna de Chile"
         statements:
           - 
-            # property_id: "P15"
             property_label: "instancia de"
             value: {"label": "comuna"}
             datatype: "wikibase-item"
-            qualifiers:
-              - 
-                # property_label: "año"
-                property_id: "P14"
-                value: 
-                  - {"value": "+2024-01-01T00:00:00Z"}  # time: year value (will be formatted as +YYYY-01-01T00:00:00Z)
-                  - {"value": 0}      # timezone: 0
-                  - {"value": 9}      # precision: 9 (year precision)
-                  - {"value": "http://www.wikidata.org/entity/Q1985727"}  # calendarmodel: Gregorian
-                datatype: "time"
+
       - 
-        update_action: "replace_all"
+        # update_action: "replace_all"
         label_column: "NOM_RBD"
         description: "Establecimiento educativo en Chile"
 
         statements:
           - 
-            # property_id: "P2"
+            property_label: "instancia de"
+            value: {label: "establecimiento"}
+            datatype: "wikibase-item"
+          -
+            property_label: "instancia de"
+            value: {label: "colegio"}
+            datatype: "wikibase-item"
+          - 
             property_label: "comuna"
             value: "NOM_COM_RBD"
             datatype: "wikibase-item"
             qualifiers:
               - 
-                property_id: "P14"
+                # property_id: "P14"
+                property_label: "año"
                 value: 
                   - {"value": "+2024-01-01T00:00:00Z"}  # time: year value (will be formatted as +YYYY-01-01T00:00:00Z)
                   - {"value": 0}      # timezone: 0
@@ -65,3 +63,35 @@ csv_files:
               - {"value": 0}      # precision: 0
               - {"value": "https://www.wikidata.org/entity/Q2"}  # globe: Earth
             datatype: "globe-coordinate"
+
+  -
+    file_path: "data/resumen_matricula_ee_2024_lite.csv"
+    encoding: "utf-8"
+    delimiter: ";"
+    decimal_separator: "."
+
+    item_mapping:
+      - 
+        update_action: "append_or_replace"
+        label_column: "NOM_RBD"
+
+        statements:
+          - 
+            property_label: "personas matriculadas"
+            value:
+              - {"column": "MAT_HOM_TOT"}
+            datatype: "quantity"
+            qualifiers:
+              - 
+                property_label: "año"
+                value: 
+                  - {"value": "+2024-01-01T00:00:00Z"}
+                  - {"value": 0}
+                  - {"value": 9}
+                  - {"value": "http://www.wikidata.org/entity/Q1985727"}
+                datatype: "time"
+              -
+                property_label: "identificador de género"
+                value: {"label": "hombre"}
+                datatype: "wikibase-item"
+
