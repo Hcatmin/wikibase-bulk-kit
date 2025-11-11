@@ -578,6 +578,8 @@ class MappingProcessor:
         for i, (_, row) in enumerate(items_to_update.iterrows()):
             # Get the QID for this item from cache
             item_label = str(row[item_mapping.label_column])
+            if item_label == "ESCUELA BASICA":
+                pass
             item_qid = qids_to_update.get(item_label)
             
             # Skip if QID not found (shouldn't happen, but safety check)
@@ -867,13 +869,242 @@ class MappingProcessor:
         
         return claim_dict
 
-    def bulk_force_append_items(self):
-        # TODO: Implement this
-        pass
+    def bulk_force_append_items(
+        self,
+        items_to_update: pd.DataFrame,
+        item_mapping: ItemMapping,
+        chunk_size: int = 1000
+    ) -> None:
+        """Update items using FORCE_APPEND action.
+        
+        For each statement in the mapping:
+        - Always appends the new claim, even if an identical one exists
+        - Allows duplicate claims with the same property+value+qualifiers
+        - Preserves all existing claims
+        
+        Args:
+            items_to_update: DataFrame with items to update
+            item_mapping: Mapping configuration for items
+            chunk_size: Number of items to process in each batch
+        """
+        if items_to_update.empty:
+            return
 
-    def bulk_keep_items(self):
-        # TODO: Implement this
-        pass
+        items = []
+        item_bulk_searcher = ItemBulkSearcher()
+        items_by_label = item_bulk_searcher.find_items_by_labels_with_data(
+            items_to_update[item_mapping.label_column].tolist(),
+            language=self.language
+        )
+        
+        for i, (_, row) in enumerate(items_to_update.iterrows()):
+            # Get the item label
+            item_label = str(row[item_mapping.label_column])
+            
+            # Get existing item from the bulk search results
+            existing_item = items_by_label.get(item_label)
+            
+            # Skip if item not found
+            if not existing_item:
+                continue
+            
+            # Make a copy to avoid modifying the cached version
+            existing_item = copy.deepcopy(existing_item)
+            
+            # Update labels and descriptions
+            existing_item['labels'] = label(self.language, item_label)
+            
+            if (item_mapping.description and 
+                item_mapping.description in items_to_update.columns):
+                item_description = str(row[item_mapping.description])
+                existing_item['descriptions'] = description(
+                    self.language, item_description
+                )
+            
+            # Process each statement in the mapping
+            if item_mapping.statements:
+                for statement in item_mapping.statements:
+                    # Create the new claim
+                    new_claim_dict = self._create_claim_dict_from_statement(
+                        statement, row
+                    )
+                    
+                    if not new_claim_dict:
+                        continue
+                    
+                    # Get property ID for this statement
+                    if statement.property_id:
+                        property_id = statement.property_id
+                    elif statement.property_label:
+                        property_id = self.pids_by_labels[
+                            statement.property_label
+                        ]
+                    else:
+                        continue
+                    
+                    # Extract the new claim from the dict
+                    new_claim = new_claim_dict[property_id][0]
+                    
+                    # Always append the claim (FORCE_APPEND behavior)
+                    if property_id in existing_item['claims']:
+                        existing_item['claims'][property_id].append(new_claim)
+                    else:
+                        # Property doesn't exist, add it
+                        existing_item['claims'][property_id] = [new_claim]
+            
+            items.append(existing_item)
+            
+            # Process in chunks
+            if len(items) >= chunk_size:
+                try:
+                    print(
+                        f"Updating batch of {len(items)} items "
+                        f"(total: {i+1})..."
+                    )
+                    result = batch('wikibase-item', items, new=False)
+                    print(
+                        f"✓ Successfully updated batch of {len(items)} items "
+                        f"(total: {i+1})"
+                    )
+                except Exception as e:
+                    print(
+                        f"✗ Error updating batch of {len(items)} items: {e}"
+                    )
+                    import traceback
+                    traceback.print_exc()
+                    raise
+                items = []
+        
+        # Process remaining items
+        if items:
+            try:
+                print(f"Updating final batch of {len(items)} items...")
+                result = batch('wikibase-item', items, new=False)
+                print(
+                    f"✓ Successfully updated final batch of "
+                    f"{len(items)} items"
+                )
+            except Exception as e:
+                print(
+                    f"✗ Error updating final batch of {len(items)} items: {e}"
+                )
+                import traceback
+                traceback.print_exc()
+                raise
+
+    def bulk_keep_items(
+        self,
+        items_to_update: pd.DataFrame,
+        item_mapping: ItemMapping,
+        chunk_size: int = 1000
+    ) -> None:
+        """Update items using KEEP action.
+        
+        For each statement in the mapping:
+        - If the property already exists on the item, keep the original claim
+        - If the property does not exist, append the new claim (no duplicates)
+        """
+        if items_to_update.empty or not item_mapping.statements:
+            return
+
+        items: list[dict] = []
+        item_bulk_searcher = ItemBulkSearcher()
+        items_by_label = item_bulk_searcher.find_items_by_labels_with_data(
+            items_to_update[item_mapping.label_column].tolist(),
+            language=self.language
+        )
+
+        kept_claims = 0
+        appended_claims = 0
+
+        for i, (_, row) in enumerate(items_to_update.iterrows()):
+            item_label = str(row[item_mapping.label_column])
+            existing_item = items_by_label.get(item_label)
+
+            if not existing_item or not existing_item.get('id'):
+                continue
+
+            current_claims = existing_item.get('claims') or {}
+            modified_item = None
+            claims_target = current_claims
+
+            for statement in item_mapping.statements:
+                property_id = (
+                    statement.property_id
+                    or self.pids_by_labels.get(statement.property_label, None)
+                )
+                if not property_id:
+                    continue
+
+                if property_id in current_claims:
+                    kept_claims += 1
+                    continue
+
+                new_claim_dict = self._create_claim_dict_from_statement(
+                    statement, row
+                )
+                if not new_claim_dict:
+                    continue
+
+                if modified_item is None:
+                    modified_item = copy.deepcopy(existing_item)
+                    modified_item['labels'] = label(self.language, item_label)
+                    if (item_mapping.description and
+                        item_mapping.description in items_to_update.columns):
+                        item_description = str(row[item_mapping.description])
+                        modified_item['descriptions'] = description(
+                            self.language, item_description
+                        )
+                    claims_target = modified_item.setdefault('claims', {})
+                    current_claims = claims_target
+
+                claims_target[property_id] = new_claim_dict[property_id]
+                current_claims[property_id] = new_claim_dict[property_id]
+                appended_claims += 1
+
+            if modified_item:
+                items.append(modified_item)
+
+            if len(items) >= chunk_size:
+                try:
+                    print(
+                        f"KEEP action: updating batch of {len(items)} items "
+                        f"(total processed: {i+1})..."
+                    )
+                    batch('wikibase-item', items, new=False)
+                    print(
+                        f"✓ KEEP action batch completed ({len(items)} items)"
+                    )
+                except Exception as e:
+                    print(
+                        f"✗ Error during KEEP batch of {len(items)} items: {e}"
+                    )
+                    import traceback
+                    traceback.print_exc()
+                    raise
+                finally:
+                    items = []
+
+        if items:
+            try:
+                print(
+                    f"KEEP action: updating final batch of {len(items)} items..."
+                )
+                batch('wikibase-item', items, new=False)
+                print("✓ KEEP action final batch completed")
+            except Exception as e:
+                print(
+                    f"✗ Error during KEEP final batch of {len(items)} items: "
+                    f"{e}"
+                )
+                import traceback
+                traceback.print_exc()
+                raise
+
+        print(
+            f"KEEP action summary: kept {kept_claims} existing claims, "
+            f"appended {appended_claims} new claims."
+        )
 
     def bulk_merge_refs_or_append_items(self):
         # TODO: Implement this
@@ -903,4 +1134,3 @@ class MappingProcessor:
             
         except Exception as e:
             print(f"Warning: Could not verify items in database: {e}")
-
