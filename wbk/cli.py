@@ -6,7 +6,7 @@ from rich.console import Console
 import sys
 
 from wbk.config.manager import ConfigManager
-from wbk.mapping.processor import MappingProcessor
+from wbk.mapping import MappingProcessor
 from wbk.schema.sync import SchemaSyncer
 
 console = Console()
@@ -48,7 +48,7 @@ def schema(config_path: Path, schema_path: Path) -> None:
         raise click.Abort()
 
 
-@cli.command()
+@cli.command(name="mapping")
 @click.option(
     '--config', '-c', 
     'config_path', 
@@ -63,18 +63,19 @@ def schema(config_path: Path, schema_path: Path) -> None:
     help='Path to mapping config'
 )
 def mapping(config_path: Path, mapping_path: Path) -> None:
-    """Process CSV files into Wikibase from project.yml."""
+    """Process CSV files using the experimental pipeline implementation."""
     console.print("[blue]Starting mapping process...[/blue]")
-    
+
     try:
         config_manager = ConfigManager(str(config_path))
         mapping_processor = MappingProcessor(config_manager)
-        console.print(f"[blue]Processing mapping config from {mapping_path}[/blue]")
+        console.print(f"[blue] Processing mapping config from {mapping_path}[/blue]")
         mapping_processor.process(str(mapping_path))
         console.print("[green]✓ Mapping process completed successfully![/green]")
     except Exception as e:
         stderr_console.print(f"[red]✗ Mapping process failed: {e}[/red]")
         raise click.Abort()
+    
 
 if __name__ == "__main__":
     cli()
