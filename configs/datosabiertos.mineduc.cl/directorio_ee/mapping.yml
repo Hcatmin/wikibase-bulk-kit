@@ -8,29 +8,37 @@ decimal_separator: ","
 
 csv_files:
   - 
-    file_path: "data/directorio_2024.csv"
+    file_path: "data/directorio_2024_lite.csv"
     # https://datosabiertos.mineduc.cl/directorio-de-establecimientos-educacionales/
     encoding: "utf-8"
     delimiter: ";"
     decimal_separator: ","
 
-    update_action: "replace_all"
-    
+    update_action: "keep"
     item_mapping:
+      - label_column: "NOM_REG_RBD_A"
+        description: "Región de Chile"
+        statements:
+          - 
+            property_label: "instancia de"
+            value: {"label": "región"}
+            datatype: "wikibase-item"
       - 
-        # update_action: "replace_all"
         label_column: "NOM_COM_RBD"
-        description: "Comuna de Chile"
+        description: "Comuna de la región de {NOM_REG_RBD_A}"
         statements:
           - 
             property_label: "instancia de"
             value: {"label": "comuna"}
             datatype: "wikibase-item"
+          -
+            property_label: "región"
+            value: "NOM_REG_RBD_A"
+            datatype: "wikibase-item"
 
       - 
-        # update_action: "replace_all"
         label_column: "NOM_RBD"
-        description: "Establecimiento educativo en Chile"
+        description: "Colegio de la comuna de {NOM_COM_RBD}"
 
         statements:
           - 
@@ -47,7 +55,6 @@ csv_files:
             datatype: "wikibase-item"
             qualifiers:
               - 
-                # property_id: "P14"
                 property_label: "año"
                 value: 
                   - {"value": "+2024-01-01T00:00:00Z"}  # time: year value (will be formatted as +YYYY-01-01T00:00:00Z)
@@ -94,4 +101,36 @@ csv_files:
                 property_label: "identificador de género"
                 value: {"label": "hombre"}
                 datatype: "wikibase-item"
+          - 
+            property_label: "personas matriculadas"
+            value:
+              - {"column": "MAT_MUJ_TOT"}
+            datatype: "quantity"
+            qualifiers:
+              - 
+                property_label: "año"
+                value: 
+                  - {"value": "+2024-01-01T00:00:00Z"}
+                  - {"value": 0}
+                  - {"value": 9}
+                  - {"value": "http://www.wikidata.org/entity/Q1985727"}
+                datatype: "time"
+              -
+                property_label: "identificador de género"
+                value: {"label": "mujer"}
+                datatype: "wikibase-item"
+          -
+            property_label: "matrículados total"
+            value:
+              - {"column": "MAT_TOTAL"}
+            datatype: "quantity"
+            qualifiers:
+              - 
+                property_label: "año"
+                value: 
+                  - {"value": "+2024-01-01T00:00:00Z"}
+                  - {"value": 0}
+                  - {"value": 9}
+                  - {"value": "http://www.wikidata.org/entity/Q1985727"}
+                datatype: "time"
 
