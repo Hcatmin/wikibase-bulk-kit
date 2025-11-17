@@ -135,6 +135,141 @@ class ItemBulkSearcher:
 
             
         return label_to_id
+
+    def find_qids(
+        self,
+        keys: List[Tuple[str, Optional[str]]],
+        chunk_size: int = 1000,
+    ) -> Dict[Tuple[str, Optional[str]], Optional[str]]:
+        """
+        Find item QIDs by (label, description) primary keys.
+
+        Args:
+            keys: List of (label, description) tuples. If description is None
+                  or empty, falls back to label-only lookup.
+            chunk_size: Number of keys to process per database query.
+
+        Returns:
+            Dictionary mapping (label, description) -> QID (or None).
+        """
+        if not keys:
+            return {}
+
+        label_desc_pairs: List[Tuple[str, str]] = []
+        label_only: List[str] = []
+
+        for label_value, description_value in keys:
+            if label_value is None:
+                continue
+            label_str = str(label_value).strip()
+            if not label_str:
+                continue
+
+            if description_value is None or str(description_value).strip() == "":
+                label_only.append(label_str)
+            else:
+                desc_str = str(description_value).strip()
+                label_desc_pairs.append((label_str, desc_str))
+
+        # Deduplicate while preserving order
+        label_desc_pairs = list(dict.fromkeys(label_desc_pairs))
+        label_only = list(dict.fromkeys(label_only))
+
+        results: Dict[Tuple[str, Optional[str]], Optional[str]] = {}
+
+        # First, resolve label+description pairs
+        for i in range(0, len(label_desc_pairs), chunk_size):
+            chunk = label_desc_pairs[i : i + chunk_size]
+            if not chunk:
+                continue
+            chunk_results = self._bulk_find_qids_by_label_and_description_db(chunk)
+            results.update(chunk_results)
+
+        # Fallback: label-only lookups for missing descriptions
+        if label_only:
+            label_results = self.find_items_by_labels_optimized(label_only)
+            for label_text, qid in label_results.items():
+                results[(label_text, None)] = qid
+
+        return results
+
+    def _bulk_find_qids_by_label_and_description_db(
+        self,
+        pairs: List[Tuple[str, str]],
+    ) -> Dict[Tuple[str, Optional[str]], Optional[str]]:
+        """
+        Database query for bulk finding items by (label, description).
+
+        Returns:
+            Dict mapping (label, description) -> QID.
+        """
+        if not pairs:
+            return {}
+
+        sanitized_pairs: List[Tuple[str, str]] = []
+        for label_value, description_value in pairs:
+            if pd.isna(label_value) or pd.isna(description_value):
+                continue
+            label_str = str(label_value).replace("'", "\\'")
+            description_str = str(description_value).replace("'", "\\'")
+            sanitized_pairs.append((label_str, description_str))
+
+        if not sanitized_pairs:
+            return {}
+
+        placeholders = ",".join(["(%s, %s)"] * len(sanitized_pairs))
+
+        cur = self.connection.conn.cursor()
+        query = f"""
+        SELECT 
+            labels.wbx_text as label_text,
+            descriptions.wbx_text as description_text,
+            label_terms.wbit_item_id as id
+        FROM wbt_item_terms AS label_terms
+        INNER JOIN wbt_term_in_lang AS label_lang
+            ON label_terms.wbit_term_in_lang_id = label_lang.wbtl_id
+        INNER JOIN wbt_text_in_lang AS label_text_lang
+            ON label_lang.wbtl_text_in_lang_id = label_text_lang.wbxl_id
+        INNER JOIN wbt_text AS labels
+            ON label_text_lang.wbxl_text_id = labels.wbx_id
+        INNER JOIN wbt_item_terms AS desc_terms
+            ON desc_terms.wbit_item_id = label_terms.wbit_item_id
+        INNER JOIN wbt_term_in_lang AS desc_lang
+            ON desc_terms.wbit_term_in_lang_id = desc_lang.wbtl_id
+        INNER JOIN wbt_text_in_lang AS desc_text_lang
+            ON desc_lang.wbtl_text_in_lang_id = desc_text_lang.wbxl_id
+        INNER JOIN wbt_text AS descriptions
+            ON desc_text_lang.wbxl_text_id = descriptions.wbx_id
+        WHERE label_lang.wbtl_type_id = 1
+          AND desc_lang.wbtl_type_id = 2
+          AND (labels.wbx_text, descriptions.wbx_text) IN ({placeholders})
+        """
+
+        params: List[str] = []
+        for label_text, description_text in sanitized_pairs:
+            params.extend([label_text, description_text])
+
+        key_to_qid: Dict[Tuple[str, Optional[str]], Optional[str]] = {}
+
+        try:
+            cur.execute(query, params)
+            results = cur.fetchall()
+
+            for label_text, description_text, item_id in results:
+                if isinstance(label_text, bytes):
+                    label_text = label_text.decode("utf-8")
+                if isinstance(description_text, bytes):
+                    description_text = description_text.decode("utf-8")
+
+                label_text = label_text.replace("\\'", "'")
+                description_text = description_text.replace("\\'", "'")
+                key_to_qid[(label_text, description_text)] = f"Q{item_id}"
+        except Exception as e:
+            print(f"Error in label/description bulk search: {e}")
+        finally:
+            cur.close()
+
+        return key_to_qid
     
     
     def find_items_by_labels_with_data(
@@ -290,6 +425,215 @@ class ItemBulkSearcher:
             cur.close()
         
         return items_by_label
+
+    def find_items(
+        self,
+        keys: List[Tuple[str, Optional[str]]],
+        language: str = "en",
+        chunk_size: int = 1000,
+    ) -> Dict[Tuple[str, Optional[str]], dict]:
+        """
+        Find items by (label, description) primary keys.
+
+        Args:
+            keys: List of (label, description) tuples. If description is None
+                  or empty, falls back to label-only lookup.
+            language: Language code for labels/descriptions.
+            chunk_size: Number of keys to process per database query.
+
+        Returns:
+            Dictionary mapping (label, description) -> item entity dict.
+        """
+        if not keys:
+            return {}
+
+        label_desc_pairs: List[Tuple[str, str]] = []
+        label_only: List[str] = []
+
+        for label_value, description_value in keys:
+            if label_value is None:
+                continue
+            label_str = str(label_value).strip()
+            if not label_str:
+                continue
+
+            if description_value is None or str(description_value).strip() == "":
+                label_only.append(label_str)
+            else:
+                desc_str = str(description_value).strip()
+                label_desc_pairs.append((label_str, desc_str))
+
+        label_desc_pairs = list(dict.fromkeys(label_desc_pairs))
+        label_only = list(dict.fromkeys(label_only))
+
+        items_by_key: Dict[Tuple[str, Optional[str]], dict] = {}
+
+        # Resolve pairs with both label and description
+        for i in range(0, len(label_desc_pairs), chunk_size):
+            chunk = label_desc_pairs[i : i + chunk_size]
+            if not chunk:
+                continue
+            chunk_results = self._bulk_find_items_with_data_by_label_and_description_db(
+                chunk,
+                language=language,
+            )
+            items_by_key.update(chunk_results)
+
+        # Fill in missing pairs with empty items
+        for label_text, description_text in label_desc_pairs:
+            key = (label_text, description_text)
+            if key not in items_by_key:
+                items_by_key[key] = self._create_empty_item(
+                    item_qid=None,
+                    item_label=label_text,
+                    language=language,
+                )
+
+        # Fallback: label-only lookups
+        if label_only:
+            label_items = self.find_items_by_labels_with_data(
+                label_only,
+                language=language,
+                chunk_size=chunk_size,
+            )
+            for label_text, item in label_items.items():
+                items_by_key[(label_text, None)] = item
+
+        return items_by_key
+
+    def _bulk_find_items_with_data_by_label_and_description_db(
+        self,
+        pairs: List[Tuple[str, str]],
+        language: str = "en",
+    ) -> Dict[Tuple[str, Optional[str]], dict]:
+        """
+        Bulk find items with full data keyed by (label, description).
+
+        Returns:
+            Dict mapping (label, description) -> item entity dict.
+        """
+        if not pairs:
+            return {}
+
+        sanitized_pairs: List[Tuple[str, str]] = []
+        for label_value, description_value in pairs:
+            if pd.isna(label_value) or pd.isna(description_value):
+                continue
+            label_str = str(label_value).replace("'", "\\'")
+            description_str = str(description_value).replace("'", "\\'")
+            sanitized_pairs.append((label_str, description_str))
+
+        if not sanitized_pairs:
+            return {}
+
+        placeholders = ",".join(["(%s, %s)"] * len(sanitized_pairs))
+        cur = self.connection.conn.cursor()
+
+        query = f"""
+        SELECT 
+            labels.wbx_text as label_text,
+            descriptions.wbx_text as description_text,
+            CONCAT('Q', label_terms.wbit_item_id) as item_qid,
+            text.old_text as item_json
+        FROM wbt_item_terms AS label_terms
+        INNER JOIN wbt_term_in_lang AS label_lang
+            ON label_terms.wbit_term_in_lang_id = label_lang.wbtl_id
+        INNER JOIN wbt_text_in_lang AS label_text_lang
+            ON label_lang.wbtl_text_in_lang_id = label_text_lang.wbxl_id
+        INNER JOIN wbt_text AS labels
+            ON label_text_lang.wbxl_text_id = labels.wbx_id
+        INNER JOIN wbt_item_terms AS desc_terms
+            ON desc_terms.wbit_item_id = label_terms.wbit_item_id
+        INNER JOIN wbt_term_in_lang AS desc_lang
+            ON desc_terms.wbit_term_in_lang_id = desc_lang.wbtl_id
+        INNER JOIN wbt_text_in_lang AS desc_text_lang
+            ON desc_lang.wbtl_text_in_lang_id = desc_text_lang.wbxl_id
+        INNER JOIN wbt_text AS descriptions
+            ON desc_text_lang.wbxl_text_id = descriptions.wbx_id
+        LEFT JOIN page
+            ON CAST(page.page_title AS CHAR) = CAST(CONCAT('Q', label_terms.wbit_item_id) AS CHAR)
+        LEFT JOIN text
+            ON text.old_id = page.page_latest
+        WHERE label_lang.wbtl_type_id = 1
+          AND desc_lang.wbtl_type_id = 2
+          AND (labels.wbx_text, descriptions.wbx_text) IN ({placeholders})
+        """
+
+        params: List[str] = []
+        for label_text, description_text in sanitized_pairs:
+            params.extend([label_text, description_text])
+
+        items_by_key: Dict[Tuple[str, Optional[str]], dict] = {}
+
+        try:
+            cur.execute(query, params)
+            results = cur.fetchall()
+
+            for (
+                label_text,
+                description_text,
+                item_qid,
+                item_json_text,
+            ) in results:
+                if isinstance(label_text, bytes):
+                    label_text = label_text.decode("utf-8")
+                if isinstance(description_text, bytes):
+                    description_text = description_text.decode("utf-8")
+
+                label_text = label_text.replace("\\'", "'")
+                description_text = description_text.replace("\\'", "'")
+
+                key = (label_text, description_text)
+
+                if not item_qid:
+                    items_by_key[key] = self._create_empty_item(
+                        item_qid=None,
+                        item_label=label_text,
+                        language=language,
+                    )
+                    continue
+
+                if item_json_text:
+                    try:
+                        if isinstance(item_json_text, bytes):
+                            item_json_text = item_json_text.decode("utf-8")
+                        item_json = json.loads(item_json_text)
+
+                        claims_dict = item_json.get("claims", {})
+                        labels_dict = item_json.get("labels", {})
+                        descriptions_dict = item_json.get("descriptions", {})
+
+                        item_entity = entity(
+                            labels=labels_dict if labels_dict else {},
+                            aliases={},
+                            descriptions=descriptions_dict if descriptions_dict else {},
+                            claims=claims_dict,
+                            etype="item",
+                        )
+                        item_entity["id"] = item_qid
+                        items_by_key[key] = item_entity
+                    except (json.JSONDecodeError, Exception) as e:
+                        print(
+                            f"Warning: Could not parse item JSON for {item_qid}: {e}. "
+                            f"Creating empty item structure."
+                        )
+                        items_by_key[key] = self._create_empty_item(
+                            item_qid=item_qid,
+                            item_label=label_text,
+                            language=language,
+                        )
+                else:
+                    items_by_key[key] = self._create_empty_item(
+                        item_qid=item_qid,
+                        item_label=label_text,
+                        language=language,
+                    )
+        except Exception as e:
+            print(f"Error in label/description data bulk search: {e}")
+        finally:
+            cur.close()
+
+        return items_by_key
     
    
     def _create_empty_item(
@@ -326,4 +670,3 @@ class ItemBulkSearcher:
     def close(self):
         """Close database connection"""
         self.connection.conn.close()
-
