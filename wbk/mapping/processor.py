@@ -13,6 +13,7 @@ from .models import (
     CSVFileConfig,
     ItemMapping,
     StatementMapping,
+    ClaimMapping,
 )
 from .pipeline import (
     MappingContext,
@@ -21,6 +22,8 @@ from .pipeline import (
     UpdateStrategyFactory,
     CreateItemsStep,
 )
+
+import wbk.mapping.utils as utils
 
 
 class MappingProcessor:
@@ -85,58 +88,44 @@ class MappingProcessor:
                 extend_with_statement(statement)
 
         selected_columns = [col for col in columns if col in dataframe.columns]
-        filtered = dataframe[selected_columns].dropna(
-            subset=[item_mapping.label_column]
-        )
+        filtered = dataframe[selected_columns]
         filtered[item_mapping.label_column] = (
             filtered[item_mapping.label_column].astype(str).str.strip()
         )
-        filtered = filtered.drop_duplicates()
+        # drop rows with NaN in any of the selected columns
+        filtered = filtered.drop_duplicates().dropna(subset=selected_columns)
         return filtered
 
-    def _collect_labels(
+    def _collect_wikibase_value_keys(
         self,
         dataframe: pd.DataFrame,
         item_mapping: ItemMapping,
-    ) -> list[str]:
-        labels: list[str] = []
-        label_column = item_mapping.label_column
-        if label_column in dataframe.columns:
-            labels.extend(
-                dataframe[label_column].drop_duplicates().dropna().tolist()
+    ) -> list[tuple[str, str | None]]:
+        """Collect unique (label, description) keys used in wikibase-item values."""
+        if not item_mapping.statements:
+            return []
+
+        keys: set[tuple[str, str | None]] = set()
+
+        def extend_from_mapping(mapping: StatementMapping | ClaimMapping | None):
+            if not mapping or mapping.datatype != "wikibase-item":
+                return
+            extracted = self.value_resolver.extract_label_description_pairs(
+                mapping.value,
+                dataframe,
             )
+            keys.update(extracted)
 
-        if item_mapping.statements:
-            for statement in item_mapping.statements:
-                labels.extend(
-                    self.value_resolver.extract_labels(
-                        statement.value,
-                        statement.datatype,
-                        dataframe,
-                    )
-                )
+        for statement in item_mapping.statements:
+            extend_from_mapping(statement)
+            if statement.qualifiers:
+                for qualifier in statement.qualifiers:
+                    extend_from_mapping(qualifier)
+            if statement.references:
+                for reference in statement.references:
+                    extend_from_mapping(reference)
 
-                if statement.qualifiers:
-                    for qualifier in statement.qualifiers:
-                        labels.extend(
-                            self.value_resolver.extract_labels(
-                                qualifier.value,
-                                qualifier.datatype,
-                                dataframe,
-                            )
-                        )
-
-                if statement.references:
-                    for reference in statement.references:
-                        labels.extend(
-                            self.value_resolver.extract_labels(
-                                reference.value,
-                                reference.datatype,
-                                dataframe,
-                            )
-                        )
-
-        return labels
+        return list(keys)
 
     def _process_item_mapping(
         self,
@@ -146,23 +135,15 @@ class MappingProcessor:
         context: MappingContext,
     ) -> None:
         filtered_df = self._filter_dataframe(dataframe, item_mapping)
-        labels = self._collect_labels(filtered_df, item_mapping)
+        value_keys = self._collect_wikibase_value_keys(filtered_df, item_mapping)
 
         context.ensure_property_ids(item_mapping.statements)
-        context.ensure_qids(labels)
-
-        label_column = item_mapping.label_column
-        known_labels = set(context.qid_cache.keys())
-        existing_mask = filtered_df[label_column].isin(known_labels)
-        df_existing = filtered_df[existing_mask]
-        df_new = filtered_df[~existing_mask]
+        context.ensure_qids(value_keys)
 
         creator = CreateItemsStep(
             claim_builder=self.claim_builder,
             chunk_size=self.chunk_size,
         )
-        creator.run(df_new, item_mapping, context)
-
         strategy = UpdateStrategyFactory.for_mapping(
             csv_config,
             item_mapping,
@@ -170,7 +151,44 @@ class MappingProcessor:
         )
         if strategy:
             strategy.chunk_size = self.chunk_size
-            strategy.run(df_existing, item_mapping, context)
+
+        if filtered_df.empty:
+            return
+
+        label_column = item_mapping.label_column
+        total_rows = len(filtered_df)
+        for start in range(0, total_rows, self.chunk_size):
+            chunk = filtered_df.iloc[start : start + self.chunk_size]
+            if chunk.empty:
+                continue
+
+            chunk['description'] = utils.create_description(chunk, item_mapping.description)
+
+            items_found = context.item_searcher.find_qids(chunk[[label_column, 'description']].itertuples(index=False, name=None))
+
+            items_found = {k:v for k,v in items_found.items() if v is not None}
+
+            items_found_keys = pd.DataFrame(items_found.keys(), columns=[label_column, 'description'])
+
+            df_existing = pd.merge(
+                chunk,
+                items_found_keys,
+                on=[label_column, 'description'],
+                how='inner',
+            )
+            df_new = pd.merge(
+                chunk,
+                items_found_keys,
+                on=[label_column, 'description'],
+                how='outer',
+                indicator=True,
+            ).loc[lambda x: x['_merge'] == 'left_only'].drop(columns=['_merge'])
+
+            if not df_new.empty:
+                creator.run(df_new, item_mapping, context)
+
+            if strategy and not df_existing.empty:
+                strategy.run(df_existing, item_mapping, context)
 
     def process(self, mapping_path: str) -> None:
         mapping_config = self._load_mapping_config(mapping_path)

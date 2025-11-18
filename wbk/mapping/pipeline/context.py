@@ -23,7 +23,7 @@ class MappingContext:
 
     language: str
     pid_cache: dict[str, str] = field(default_factory=dict)
-    qid_cache: dict[str, str] = field(default_factory=dict)
+    qid_cache: dict[str | tuple[str, str | None], str] = field(default_factory=dict)
     db_connection: DBConnection = field(default_factory=DBConnection)
     item_searcher: ItemBulkSearcher = field(default_factory=ItemBulkSearcher)
 
@@ -47,12 +47,16 @@ class MappingContext:
             for reference in _iter_claims(statement.references):
                 _maybe_add(reference.property_label)
 
-    def ensure_qids(self, labels: Iterable[str]) -> None:
-        """Populate the QID cache for the provided labels."""
-        unique_labels = list(set(labels))
-        items_found = self.item_searcher.find_items_by_labels_optimized(unique_labels)
-        self.qid_cache.update(items_found)
+    def ensure_qids(
+        self,
+        label_description_pairs: Iterable[tuple[str, str | None]],
+    ) -> None:
+        """Populate the QID cache for the provided value statements."""
 
+        qids_found = self.item_searcher.find_qids(label_description_pairs)
+
+        self.qid_cache.update(qids_found)
+        
     def get_property_id(
         self,
         property_id: str | None,
@@ -65,15 +69,23 @@ class MappingContext:
             return self.pid_cache[property_label]
         raise ValueError("Property id or property label is required")
 
-    def get_qid(self, label_or_qid: str) -> str | None:
-        """Return a QID for a provided label or QID literal."""
+    def get_qid(self, label_or_qid: str | tuple[str, str | None]) -> str | None:
+        """Return a QID for a provided label/description pair or QID literal."""
+        if isinstance(label_or_qid, tuple):
+            label_value, description_value = label_or_qid
+            normalized_label = self._normalize_term(label_value)
+            normalized_description = self._normalize_term(description_value)
+            if not normalized_label:
+                return None
+            return self.qid_cache.get((normalized_label, normalized_description)) or self.qid_cache.get(normalized_label)
+
         if (
             label_or_qid.startswith("Q")
             and len(label_or_qid) > 1
             and label_or_qid[1:].isdigit()
         ):
             return label_or_qid
-        return self.qid_cache.get(label_or_qid)
+        return self.qid_cache.get((label_or_qid, None))
 
     def verify_items_created(self) -> None:
         """Run a light-weight verification against the DBConnection."""
@@ -95,3 +107,10 @@ class MappingContext:
             print(f"Recent items in database: {recent_items}")
         except Exception as exc:
             print(f"Warning: Could not verify items in database: {exc}")
+
+    @staticmethod
+    def _normalize_term(term: str | None) -> str | None:
+        if term is None:
+            return None
+        term_str = str(term).strip()
+        return term_str or None

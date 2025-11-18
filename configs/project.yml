@@ -4,18 +4,11 @@ version: "1.0.0"
 description: "Bulk upload of Chilean open datasets to Wikibase"
 
 wikibase:
-  url: "https://example.wikibase.org"
-  username: "admin"
-  password: "password"
-  entity_namespace: "Item"
-  property_namespace: "Property"
+  url: "http://localhost:8181"
+  username: "Admin"
+  password: "change-this-password"
+  sparql_endpoint: "http://localhost:8834/proxy/wdqs/bigdata/namespace/wdq/sparql"
 
-upload:
-  batch_size: 50
-  max_retries: 3
-  retry_delay: 5
-
-# Additional settings
 settings:
   language: "en"
   default_timezone: "UTC"
