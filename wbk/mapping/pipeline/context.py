@@ -25,9 +25,8 @@ class MappingContext:
     pid_cache: dict[str, str] = field(default_factory=dict)
     qid_cache: dict[str | tuple[str, str | None], str] = field(default_factory=dict)
     db_connection: DBConnection = field(default_factory=DBConnection)
-    item_searcher: ItemBulkSearcher = field(default_factory=ItemBulkSearcher)
 
-    def ensure_property_ids(self, statements: list[StatementMapping] | None) -> None:
+    def ensure_pids(self, statements: list[StatementMapping] | None) -> None:
         """Populate the PID cache using property labels found in statements."""
 
         def _maybe_add(property_label: str | None):
@@ -52,8 +51,8 @@ class MappingContext:
         label_description_pairs: Iterable[tuple[str, str | None]],
     ) -> None:
         """Populate the QID cache for the provided value statements."""
-
-        qids_found = self.item_searcher.find_qids(label_description_pairs)
+        with ItemBulkSearcher() as item_searcher:
+            qids_found = item_searcher.find_qids(label_description_pairs)
 
         self.qid_cache.update(qids_found)
         

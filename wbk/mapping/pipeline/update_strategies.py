@@ -14,7 +14,7 @@ from RaiseWikibase.raiser import batch
 from ..models import ItemMapping, UpdateAction, StatementMapping, CSVFileConfig
 from .context import MappingContext
 from .claim_builder import ClaimBuilder
-
+from wbk.processor.bulk_item_search import ItemBulkSearcher
 import re
 
 
@@ -226,7 +226,8 @@ class ReplaceAllStrategy(UpdateStrategy):
             return
 
         keys = self._collect_lookup_keys(contexts)
-        qids = context.item_searcher.find_qids(keys)
+        with ItemBulkSearcher() as item_searcher:
+            qids = item_searcher.find_qids(keys)
 
         items: list[dict] = []
         for row_ctx in contexts:
@@ -279,13 +280,14 @@ class AppendOrReplaceStrategy(UpdateStrategy):
             return
 
         keys = self._collect_lookup_keys(contexts)
-        items_by_key = context.item_searcher.find_items(
-            keys,
-            language=context.language,
-        )
+        
+        with ItemBulkSearcher() as item_searcher:
+            items_by_key = item_searcher.find_items(
+                keys,
+                language=context.language,
+            )
 
         items: list[dict] = []
-
         for row_ctx in contexts:
             key = (row_ctx.label, row_ctx.normalized_description)
             existing_item = items_by_key.get(key) or items_by_key.get((row_ctx.label, None))
@@ -354,10 +356,11 @@ class ForceAppendStrategy(UpdateStrategy):
             return
 
         keys = self._collect_lookup_keys(contexts)
-        items_by_key = context.item_searcher.find_items(
-            keys,
-            language=context.language,
-        )
+        with ItemBulkSearcher() as item_searcher:
+            items_by_key = item_searcher.find_items(
+                keys,
+                language=context.language,
+            )
 
         items: list[dict] = []
         for row_ctx in contexts:
@@ -415,11 +418,11 @@ class KeepStrategy(UpdateStrategy):
             return
 
         keys = self._collect_lookup_keys(contexts)
-        items_by_key = context.item_searcher.find_items(
-            keys,
-            language=context.language,
-        )
-
+        with ItemBulkSearcher() as item_searcher:
+            items_by_key = item_searcher.find_items(
+                keys,
+                language=context.language,
+            )
         items: list[dict] = []
 
         for row_ctx in contexts:

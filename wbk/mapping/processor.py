@@ -24,6 +24,7 @@ from .pipeline import (
 )
 
 import wbk.mapping.utils as utils
+from wbk.processor.bulk_item_search import ItemBulkSearcher
 
 
 class MappingProcessor:
@@ -89,9 +90,11 @@ class MappingProcessor:
 
         selected_columns = [col for col in columns if col in dataframe.columns]
         filtered = dataframe[selected_columns]
-        filtered[item_mapping.label_column] = (
-            filtered[item_mapping.label_column].astype(str).str.strip()
-        )
+        # strip whitespace from all selected string columns, keep NaN values untouched
+        str_cols = filtered.select_dtypes(include=["object", "string"]).columns.intersection(selected_columns)
+        for c in str_cols:
+            filtered[c] = filtered[c].where(filtered[c].isna(), filtered[c].astype(str).str.strip())
+
         # drop rows with NaN in any of the selected columns
         filtered = filtered.drop_duplicates().dropna(subset=selected_columns)
         return filtered
@@ -137,7 +140,7 @@ class MappingProcessor:
         filtered_df = self._filter_dataframe(dataframe, item_mapping)
         value_keys = self._collect_wikibase_value_keys(filtered_df, item_mapping)
 
-        context.ensure_property_ids(item_mapping.statements)
+        context.ensure_pids(item_mapping.statements)
         context.ensure_qids(value_keys)
 
         creator = CreateItemsStep(
@@ -161,10 +164,10 @@ class MappingProcessor:
             chunk = filtered_df.iloc[start : start + self.chunk_size]
             if chunk.empty:
                 continue
-
             chunk['description'] = utils.create_description(chunk, item_mapping.description)
 
-            items_found = context.item_searcher.find_qids(chunk[[label_column, 'description']].itertuples(index=False, name=None))
+            with ItemBulkSearcher() as item_searcher:
+                items_found = item_searcher.find_qids(chunk[[label_column, 'description']].itertuples(index=False, name=None))
 
             items_found = {k:v for k,v in items_found.items() if v is not None}
 

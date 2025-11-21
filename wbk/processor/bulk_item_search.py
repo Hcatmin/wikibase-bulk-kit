@@ -15,6 +15,15 @@ class ItemBulkSearcher:
         self.connection = DBConnection()
         self.cache = {}
         self.cache_size = cache_size
+
+    def __enter__(self, cache_size: int = 10000):
+        self.connection = DBConnection()
+        self.cache = {}
+        self.cache_size = cache_size
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
     
     def _get_from_cache(self, labels: List[str]) -> Tuple[Dict[str, Optional[str]], List[str]]:
         """Get cached results and return uncached labels"""

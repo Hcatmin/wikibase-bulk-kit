@@ -83,6 +83,9 @@ class ClaimBuilder:
             snaktype="value",
         )
 
+        if not mainsnak_dict:
+            return None
+
         claim_dict = claim(
             prop=property_id,
             mainsnak=mainsnak_dict,
