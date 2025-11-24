@@ -11,6 +11,7 @@ import sys
 
 from ..config.manager import ConfigManager
 from .models import SchemaConfig, ItemSchema, PropertySchema
+from wbk.backend.interface import BackendStrategy
 from ..backend.api import ApiBackend
 
 console = Console(force_terminal=True, width=120)
@@ -27,9 +28,8 @@ class SchemaSyncer:
             config_manager: Configuration manager instance
         """
         self.config_manager = config_manager
-        self.language: str = 'en'
-        # Initialize backend strategy (currently defaulting to ApiBackend)
-        self.backend = ApiBackend(config_manager)
+        self.language: str = 'es'
+        self.backend: BackendStrategy | None = None
 
     def sync(self, schema_path: str) -> None:
         """Sync schema definitions to Wikibase.
@@ -39,6 +39,7 @@ class SchemaSyncer:
         """
         schema_config = self._load_schema_config(schema_path)
         self.language = schema_config.language
+        self.backend = ApiBackend(self.config_manager, self.language)
         
         stats = {
             "properties": {"created": 0, "updated": 0, "failed": 0},
@@ -128,19 +129,18 @@ class SchemaSyncer:
         if not property_schema.id:
             existing_property_id = self.backend.find_property_by_label(
                 property_schema.label, 
-                self.language
             )
             
             if existing_property_id:
                 property_schema.id = existing_property_id
         
         if property_schema.id:
-            if self.backend.update_property(property_schema, self.language):
+            if self.backend.update_property(property_schema):
                 stats["updated"] += 1
             else:
                 stats["failed"] += 1
         else:
-            new_id = self.backend.create_property(property_schema, self.language)
+            new_id = self.backend.create_property(property_schema)
             if new_id:
                 property_schema.id = new_id
                 stats["created"] += 1
@@ -158,19 +158,20 @@ class SchemaSyncer:
             existing_item_id = self.backend.find_item_by_label_and_description(
                 item_schema.label,
                 item_schema.description,
-                self.language
             )
             
             if existing_item_id:
                 item_schema.id = existing_item_id
         
         if item_schema.id:
-            if self.backend.update_item(item_schema, self.language):
+            if self.backend.update_item(item_schema):
                 stats["updated"] += 1
             else:
                 stats["failed"] += 1
         else:
-            new_id = self.backend.create_item(item_schema, self.language)
+            if item_schema.label == "comuna":
+                print("debug")
+            new_id = self.backend.create_item(item_schema)
             if new_id:
                 item_schema.id = new_id
                 stats["created"] += 1

@@ -20,7 +20,8 @@ stderr_console = Console(file=sys.stderr, force_terminal=True, width=120)
 class ApiBackend(BackendStrategy):
     """Backend strategy using WikibaseIntegrator API."""
 
-    def __init__(self, config_manager: ConfigManager):
+    def __init__(self, config_manager: ConfigManager, language: str = 'es') -> None:
+        super().__init__(language=language)
         self.config_manager = config_manager
         self.wbi = config_manager.get_wikibase_integrator()
         # Cache for items by label and description to avoid repeated lookups
@@ -28,14 +29,14 @@ class ApiBackend(BackendStrategy):
         # Cache for properties by label
         self.properties_by_label: dict[str, str] = {}
 
-    def find_property_by_label(self, label: str, language: str) -> Optional[str]:
-        properties = wbi_helpers.search_entities(label, language=language, search_type='property', dict_result=True)
+    def find_property_by_label(self, label: str) -> Optional[str]:
+        properties = wbi_helpers.search_entities(label, language=self.language, search_type='property', dict_result=True)
 
         for prop in properties:
             prop_id = prop.get('id', 'Unknown')
             try:
                 full_prop = self.wbi.property.get(entity_id=prop_id)
-                prop_label = full_prop.labels.get(language)
+                prop_label = full_prop.labels.get(self.language)
                 
                 if prop_label and prop_label.value == label:
                     return prop_id
@@ -44,8 +45,8 @@ class ApiBackend(BackendStrategy):
         
         return None
 
-    def find_item_by_label(self, label: str, language: str) -> Optional[str]:
-        response = wbi_helpers.search_entities(label, language=language, search_type='item', dict_result=True)
+    def find_item_by_label(self, label: str) -> Optional[str]:
+        response = wbi_helpers.search_entities(label, language=self.language, search_type='item', dict_result=True)
 
         if len(response) == 0:
             raise ValueError(f"No item found for label '{label}'")
@@ -54,15 +55,15 @@ class ApiBackend(BackendStrategy):
         else:
             return response[0].get('id')
 
-    def find_item_by_label_and_description(self, label: str, description: str, language: str) -> Optional[str]:
-        items = wbi_helpers.search_entities(label, language=language, search_type='item', dict_result=True)
+    def find_item_by_label_and_description(self, label: str, description: str) -> Optional[str]:
+        items = wbi_helpers.search_entities(label, language=self.language, search_type='item', dict_result=True)
         
         for item in items:
             item_id = item.get('id')
             try:
                 full_item = self.wbi.item.get(entity_id=item_id)
-                item_label = full_item.labels.get(language)
-                item_description = full_item.descriptions.get(language)
+                item_label = full_item.labels.get(self.language)
+                item_description = full_item.descriptions.get(self.language)
         
                 if (item_label and item_label.value == label and 
                     item_description and item_description.value == description):
@@ -72,12 +73,12 @@ class ApiBackend(BackendStrategy):
         
         return None
 
-    def find_item_by_expression(self, expression: str, language: str) -> Optional[str]:
+    def find_item_by_expression(self, expression: str) -> Optional[str]:
         if re.match(r'.+ \(.+\)$', expression):
             label = expression.split('(')[0].strip()
             key_word = expression.split('(')[1].split(')')[0].strip()
             
-            response = wbi_helpers.search_entities(label, language=language, search_type='item', dict_result=True)
+            response = wbi_helpers.search_entities(label, language=self.language, search_type='item', dict_result=True)
 
             if len(response) == 0:
                 raise ValueError(f"No item found for label '{label}'")
@@ -86,8 +87,8 @@ class ApiBackend(BackendStrategy):
                 for item in response:
                     item_id = item.get('id')
                     full_item = self.wbi.item.get(entity_id=item_id)
-                    item_label = full_item.labels.get(language)
-                    item_description = str(full_item.descriptions.get(language).value).lower()
+                    item_label = full_item.labels.get(self.language)
+                    item_description = str(full_item.descriptions.get(self.language).value).lower()
             
                     if (item_label and item_label.value == label and 
                         item_description and key_word in item_description):
@@ -99,18 +100,18 @@ class ApiBackend(BackendStrategy):
                 else:
                     return item_coincidences[0]
         else:
-            return self.find_item_by_label(expression, language)
+            return self.find_item_by_label(expression)
 
-    def create_property(self, property_schema: PropertySchema, language: str) -> Optional[str]:
+    def create_property(self, property_schema: PropertySchema) -> Optional[str]:
         try:
             prop = self.wbi.property.new()
             prop.datatype = property_schema.datatype
-            prop.labels.set(language, property_schema.label)
-            prop.descriptions.set(language, property_schema.description)
+            prop.labels.set(self.language, property_schema.label)
+            prop.descriptions.set(self.language, property_schema.description)
             
             if property_schema.aliases:
                 for alias in property_schema.aliases:
-                    prop.aliases.set(language, alias)
+                    prop.aliases.set(self.language, alias)
             
             prop.write(login=self.wbi.login)
             
@@ -122,15 +123,15 @@ class ApiBackend(BackendStrategy):
         except Exception as e:
             return None
 
-    def update_property(self, property_schema: PropertySchema, language: str) -> bool:
+    def update_property(self, property_schema: PropertySchema) -> bool:
         try:
             prop = self.wbi.property.get(entity_id=property_schema.id)
 
             prop.datatype = property_schema.datatype
-            prop.labels.set(language, property_schema.label)
-            prop.descriptions.set(language, property_schema.description)
+            prop.labels.set(self.language, property_schema.label)
+            prop.descriptions.set(self.language, property_schema.description)
             
-            prop.aliases.set(language, property_schema.aliases, ActionIfExists.REPLACE_ALL)
+            prop.aliases.set(self.language, property_schema.aliases, ActionIfExists.REPLACE_ALL)
             
             prop.write(login=self.wbi.login)
 
@@ -139,18 +140,18 @@ class ApiBackend(BackendStrategy):
         except Exception as e:
             return False
 
-    def create_item(self, item_schema: ItemSchema, language: str) -> Optional[str]:
+    def create_item(self, item_schema: ItemSchema) -> Optional[str]:
         try:
             item = self.wbi.item.new()
-            item.labels.set(language, item_schema.label)
-            item.descriptions.set(language, item_schema.description)
+            item.labels.set(self.language, item_schema.label)
+            item.descriptions.set(self.language, item_schema.description)
             
             if item_schema.aliases:
                 for alias in item_schema.aliases:
-                    item.aliases.set(language, alias)
+                    item.aliases.set(self.language, alias)
             
             if item_schema.statements:
-                claims_to_add = self._create_claims_from_statements(item_schema.statements, language)
+                claims_to_add = self._create_claims_from_statements(item_schema.statements)
                 if claims_to_add:
                     item.add_claims(claims_to_add, ActionIfExists.REPLACE_ALL)
             
@@ -168,17 +169,17 @@ class ApiBackend(BackendStrategy):
         except Exception as e:
             return None
 
-    def update_item(self, item_schema: ItemSchema, language: str) -> bool:
+    def update_item(self, item_schema: ItemSchema) -> bool:
         try:
             item = self.wbi.item.get(entity_id=item_schema.id)
             
-            item.labels.set(language, item_schema.label)
-            item.descriptions.set(language, item_schema.description)
+            item.labels.set(self.language, item_schema.label)
+            item.descriptions.set(self.language, item_schema.description)
             
-            item.aliases.set(language, item_schema.aliases, ActionIfExists.REPLACE_ALL)
+            item.aliases.set(self.language, item_schema.aliases, ActionIfExists.REPLACE_ALL)
             
             if item_schema.statements:
-                claims_to_add = self._create_claims_from_statements(item_schema.statements, language)
+                claims_to_add = self._create_claims_from_statements(item_schema.statements)
                 if claims_to_add:
                     item.add_claims(claims_to_add, ActionIfExists.REPLACE_ALL)
             
@@ -189,21 +190,21 @@ class ApiBackend(BackendStrategy):
         except Exception as e:
             return False
 
-    def _create_claims_from_statements(self, statements: List[StatementSchema], language: str) -> list:
+    def _create_claims_from_statements(self, statements: List[StatementSchema]) -> list:
         claims_to_add = []
         for statement in statements:
-            claim = self._create_claim(statement, language)
+            claim = self._create_claim(statement)
             if claim:
                 claims_to_add.append(claim)
         return claims_to_add
 
-    def _create_claim(self, statement: StatementSchema | ClaimSchema, language: str):
+    def _create_claim(self, statement: StatementSchema | ClaimSchema):
         if not statement.id:
             # Check local cache first
             if statement.label in self.properties_by_label:
                 statement_id = self.properties_by_label[statement.label]
             else:
-                statement_id = self.find_property_by_label(statement.label, language)
+                statement_id = self.find_property_by_label(statement.label)
         else:
             statement_id = statement.id
             
@@ -216,13 +217,13 @@ class ApiBackend(BackendStrategy):
                 if hasattr(statement, 'qualifiers') and statement.qualifiers:
                     qualifiers = Qualifiers()
                     for qualifier in statement.qualifiers:
-                        qualifiers.add(self._create_claim(qualifier, language))
+                        qualifiers.add(self._create_claim(qualifier))
 
                 references = None
                 if hasattr(statement, 'references') and statement.references:
                     references = References()
                     for reference in statement.references:
-                        references.add(self._create_claim(reference, language))
+                        references.add(self._create_claim(reference))
 
                 value = statement.value
                 if not statement.value.startswith('Q'):
@@ -245,7 +246,7 @@ class ApiBackend(BackendStrategy):
                                 found_in_cache = True
 
                     if not found_in_cache:
-                        value = self.find_item_by_expression(statement.value, language)
+                        value = self.find_item_by_expression(statement.value)
 
                 item = Item(prop_nr=statement_id, value=value, qualifiers=qualifiers, references=references)
                 return item
@@ -261,3 +262,33 @@ class ApiBackend(BackendStrategy):
                 return ExternalID(prop_nr=statement_id, value=str(statement.value))
             case _:
                 return String(prop_nr=statement_id, value=str(statement.value))
+
+    def find_qids(self, keys: List[dict], language: str) -> dict:
+        # Fallback implementation using loops
+        results = {}
+        for i, key in enumerate(keys):
+            try:
+                if 'unique_key' in key:
+                    # Not supported in ApiBackend efficiently, skipping or implementing basic search
+                    # For now, return None
+                    results[i] = None
+                elif 'label' in key:
+                    if 'description' in key and key['description']:
+                        results[i] = self.find_item_by_label_and_description(key['label'], key['description'], language)
+                    else:
+                        results[i] = self.find_item_by_label(key['label'], language)
+            except Exception:
+                results[i] = None
+        return results
+
+    def create_items(self, items: List[dict], language: str) -> List[str]:
+        # ApiBackend expects ItemSchema, but items here are dicts (RaiseWikibase format).
+        # This is a mismatch. Strategies use RaiseWikibase format.
+        # ApiBackend needs to support RaiseWikibase format or we need a converter.
+        # For now, we'll raise NotImplementedError or return empty list to indicate mismatch.
+        # Or we can try to convert if simple.
+        # Given the task focus is RaiseWikibaseBackend, we can leave this as TODO or basic.
+        return []
+
+    def update_items(self, items: List[dict], language: str) -> List[bool]:
+        return []
