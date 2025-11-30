@@ -40,7 +40,7 @@ class DBConnection:
         """Helper function for retrieving primary admin user id."""
         cur = self.conn.cursor()
         cur.execute("SELECT user_id FROM user WHERE user_name = '%s'" \
-                    % self.wikibase_env["MW_ADMIN_NAME"])
+                    % self.wikibase_env["MW_ADMIN_NAME"].capitalize())
         out = cur.fetchone()[0]
         cur.close()
         return out
@@ -372,20 +372,16 @@ class DBConnection:
         else:
             raise ValueError('{} is not a valid "new" parameter. Use "True" or "False".'.format(new))
         cur.execute("INSERT INTO text VALUES(%s,%s,'utf-8')", [text_id, text])
-        cur.execute("REPLACE INTO page VALUES(%s,%s,%s,'',0,%s,rand(),%s,%s,%s,%s,%s,NULL)",
+        cur.execute("REPLACE INTO page VALUES(%s,%s,%s,0,%s,rand(),%s,%s,%s,%s,%s,NULL)",
                     [page_id, namespace, page_title, int(new), timenow, timenow, page_latest, len_data, content_model])
-        cur.execute("INSERT INTO revision VALUES(NULL,%s,0,0,%s,0,0,%s,%s,%s)",
-                    [page_id, timenow, len_data, rev_parent_id, sha1hash])
         cur.execute("INSERT INTO comment VALUES(%s,%s,%s,NULL)",
                     [comment_id, chash, comment])
-        cur.execute("INSERT INTO revision_comment_temp VALUES (%s,%s)",
-                    [rev_id, comment_id])
-        cur.execute("INSERT INTO revision_actor_temp VALUES(%s,1,%s,%s)",
-                    [rev_id, timenow, page_id])
+        cur.execute("INSERT INTO revision VALUES(%s,%s,%s,1,%s,0,0,%s,%s,%s)",
+                    [rev_id, page_id, comment_id, timenow, len_data, rev_parent_id, sha1hash])
         cur.execute("INSERT INTO content VALUES(%s,%s,%s,%s,%s)",
                     [content_id, len_data, sha1hash, model_id, 'tt:' + str(text_id)])
         cur.execute("INSERT INTO slots VALUES(%s,1,%s,%s)",
-                    [text_id, content_id, text_id])
+                    [rev_id, content_id, text_id])
         cur.execute("INSERT INTO recentchanges VALUES (NULL,%s,1,%s,%s,%s,0,0,%s,%s,%s,%s,%s,%s,2,%s,%s,%s,0,0,NULL,'','')",
                     [timenow, namespace, page_title, comment_id, int(new), page_id, rev_id, rc_last_oldid, rc_type, rc_source, ip, rc_old_len, len_data])
         cur.close()
@@ -444,3 +440,68 @@ class DBConnection:
         cur.close()
 
         return property_id
+
+    def _get_property_datatype(self, numeric_property_id):
+        """Return the datatype of a property given its numeric id."""
+        cur = self.conn.cursor()
+        datatype = None
+        try:
+            cur.execute(
+                """
+                SELECT pi_type
+                FROM wb_property_info
+                WHERE pi_property_id = %s
+                LIMIT 1
+                """,
+                [numeric_property_id],
+            )
+            row = cur.fetchone()
+            if row:
+                datatype = row[0]
+                if isinstance(datatype, bytes):
+                    datatype = datatype.decode("utf-8")
+        except Exception:
+            datatype = None
+        finally:
+            cur.close()
+        return datatype
+
+    def find_property_info(self, name):
+        """Return a tuple (property_id, datatype) for a property label or id."""
+        property_id = None
+        numeric_id = None
+
+        # If an id is provided, short-circuit label lookup
+        if isinstance(name, str) and name.startswith("P") and name[1:].isdigit():
+            property_id = name
+            numeric_id = name[1:]
+        else:
+            cur = self.conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT wbpt_property_id
+                    FROM wbt_property_terms
+                    LEFT JOIN wbt_term_in_lang ON wbpt_term_in_lang_id = wbtl_id
+                    LEFT JOIN wbt_text_in_lang ON wbtl_text_in_lang_id = wbxl_id
+                    LEFT JOIN wbt_text ON wbxl_text_id = wbx_id
+                    WHERE wbtl_type_id = 1 AND wbx_text = %s
+                    LIMIT 1
+                    """,
+                    [name],
+                )
+                row = cur.fetchone()
+                if row:
+                    numeric_id = row[0]
+                    property_id = f"P{numeric_id}"
+            except Exception:
+                property_id = None
+                numeric_id = None
+            finally:
+                cur.close()
+
+        datatype = None
+        if numeric_id is not None:
+            datatype = self._get_property_datatype(numeric_id)
+
+        return property_id, datatype
