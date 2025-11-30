@@ -6,7 +6,7 @@ import pandas as pd
 
 from RaiseWikibase.datamodel import claim, snak, entity, label, description
 
-from ..models import StatementMapping, ClaimMapping
+from ..models import StatementDefinition
 from .context import MappingContext
 from .value_resolution import ValueResolver
 
@@ -19,24 +19,23 @@ class ClaimBuilder:
 
     def _create_snak(
         self,
-        claim_mapping: ClaimMapping,
+        claim_mapping: StatementDefinition,
         row: pd.Series,
         context: MappingContext,
     ) -> dict:
-        property_id = context.get_property_id(
-            claim_mapping.property_id,
-            claim_mapping.property_label,
-        )
+        property_id, datatype = context.get_property_info(claim_mapping.property)
+        if not property_id:
+            raise ValueError(f"Property not found: {claim_mapping.property}")
 
         value = self.value_resolver.resolve(
             claim_mapping.value,
             row,
-            claim_mapping.datatype,
+            datatype,
             context,
         )
 
         return snak(
-            datatype=claim_mapping.datatype,
+            datatype=datatype or "",
             value=value,
             prop=property_id,
             snaktype="value",
@@ -44,20 +43,19 @@ class ClaimBuilder:
 
     def build_claim(
         self,
-        statement: StatementMapping,
+        statement: StatementDefinition,
         row: pd.Series,
         context: MappingContext,
     ) -> dict | None:
-        property_id = context.get_property_id(
-            statement.property_id,
-            statement.property_label,
-        )
+        property_id, datatype = context.get_property_info(statement.property)
+        if not property_id:
+            return None
 
         try:
             value = self.value_resolver.resolve(
                 statement.value,
                 row,
-                statement.datatype,
+                datatype,
                 context,
             )
         except ValueError:
@@ -77,7 +75,7 @@ class ClaimBuilder:
                 references.append(self._create_snak(reference, row, context))
 
         mainsnak_dict = snak(
-            datatype=statement.datatype,
+            datatype=datatype or "",
             value=value,
             prop=property_id,
             snaktype="value",
@@ -102,7 +100,7 @@ class ClaimBuilder:
         self,
         item: entity,
         row: pd.Series,
-        statements: list[StatementMapping] | None,
+        statements: list[StatementDefinition] | None,
         context: MappingContext,
     ) -> None:
         if not statements:
@@ -113,21 +111,3 @@ class ClaimBuilder:
             if not claim_dict:
                 continue
             item["claims"].update(claim_dict)
-
-    def build_labels_and_description(
-        self,
-        row: pd.Series,
-        item_mapping,
-        context: MappingContext,
-        dataframe: pd.DataFrame,
-    ):
-        """Convenience helper kept for compatibility with existing flow."""
-        item_name = str(row[item_mapping.label_column])
-        labels = label(context.language, item_name)
-
-        descriptions = {}
-        if item_mapping.description and item_mapping.description in dataframe.columns:
-            item_description = str(row[item_mapping.description])
-            descriptions = description(context.language, item_description)
-
-        return labels, descriptions

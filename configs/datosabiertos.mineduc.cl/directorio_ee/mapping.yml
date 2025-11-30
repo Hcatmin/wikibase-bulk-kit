@@ -7,134 +7,103 @@ delimiter: ";"
 decimal_separator: ","
 
 csv_files:
-  # - file_path: "data/directorio_2024_border.csv"
   - file_path: "data/directorio_2024_lite.csv"
-    # https://datosabiertos.mineduc.cl/directorio-de-establecimientos-educacionales/
-    encoding: "utf-8"
-    delimiter: ";"
-    decimal_separator: ","
-
     update_action: "replace_all"
-    item_mapping:
-      - label_column: "NOM_REG_RBD_A"
-        description: "Región de Chile"
+    mappings:
+      - item:
+          label: "{NOM_REG_RBD_A}"
+          unique_key:
+            property: "código oficial de región"
+            value: "{COD_REG_RBD}"
+          description: "Región de Chile"
         statements:
-          - 
-            property_label: "instancia de"
-            value: {"label": "región"}
-            datatype: "wikibase-item"
-      - 
-        label_column: "NOM_COM_RBD"
-        description: "Comuna de la región de {NOM_REG_RBD_A}"
+          - property: "código oficial de región"
+            value: "{COD_REG_RBD}"
+          - property: "instancia de"
+            value:
+              label: "región"
+      - item:
+          label: "{NOM_COM_RBD}"
+          unique_key:
+            property: "código oficial de comuna"
+            value: "{COD_COM_RBD}"
+          description: "Comuna de Chile, denominada {NOM_COM_RBD}"
         statements:
-          - 
-            property_label: "instancia de"
-            value: {"label": "comuna"}
-            datatype: "wikibase-item"
-          -
-            property_label: "región"
+          - property: "código oficial de comuna" 
+            value: "{COD_COM_RBD}"
+          - property: "instancia de"
+            value:
+              label: "comuna"
+          - property: "región"
+            value:
+              label: "{NOM_REG_RBD_A}"
+              unique_key:
+                property: "código oficial de región"
+                value: "{COD_REG_RBD}"
+      - item:
+          label: "{NOM_RBD}"
+          unique_key:
+            property: "rol base de datos del establecimiento"
+            value: "{RBD}"
+          description: "Colegio {RBD} de la comuna de {NOM_COM_RBD}"
+        statements:
+          - property: "instancia de" # datatype: "wikibase-item"
+            value:
+              label: "colegio"
+          - property: "rol base de datos del establecimiento" # datatype: Quantity
+            value: "{RBD}"
+          - property: "comuna" # datatype: "wikibase-item"
             value: 
-              column: "NOM_REG_RBD_A"
-              value_description: "Región de Chile"
-            datatype: "wikibase-item"
-
-      - 
-        label_column: "NOM_RBD"
-        description: "Colegio {RBD} de la comuna de {NOM_COM_RBD}"
-
-        statements:
-          - 
-            property_label: "instancia de"
-            value: {label: "establecimiento"}
-            datatype: "wikibase-item"
-          -
-            property_label: "instancia de"
-            value: {label: "colegio"}
-            datatype: "wikibase-item"
-          - 
-            property_label: "comuna"
+              label: "{NOM_COM_RBD}"
+              unique_key:
+                property: "código oficial de comuna"
+                value: "{COD_COM_RBD}"
+          - property: "ubicación" # datatype: "globe-coordinate"
             value: 
-              column: "NOM_COM_RBD"
-              value_description: "Comuna de la región de {NOM_REG_RBD_A}"
-            datatype: "wikibase-item"
+              - "{LATITUD}"
+              - "{LONGITUD}"
+              - 0      # precision: 0
+              - "https://www.wikidata.org/entity/Q2" # globe: Earth 
+  - file_path: "data/resumen_matricula_ee_2024_lite.csv"
+    update_action: "append_or_replace"
+    mappings:
+      - item:
+          label: "{NOM_RBD}"
+          unique_key:
+            property: "rol base de datos del establecimiento"
+            value: "{RBD}"
+        statements:
+          - property: "personas matriculadas"
+            value: "{MAT_HOM_TOT}"
             qualifiers:
-              - 
-                property_label: "año"
+              - property: "año"
                 value: 
-                  - {"value": "+2024-01-01T00:00:00Z"}  # time: year value (will be formatted as +YYYY-01-01T00:00:00Z)
-                  - {"value": 0}      # timezone: 0
-                  - {"value": 9}      # precision: 9 (year precision)
-                  - {"value": "http://www.wikidata.org/entity/Q1985727"}  # calendarmodel: Gregorian
-                datatype: "time"
-          - 
-            property_label: "ubicación"
-            value: 
-              - {"column": "LATITUD"}
-              - {"column": "LONGITUD"}
-              - {"value": 0}      # precision: 0
-              - {"value": "https://www.wikidata.org/entity/Q2"}  # globe: Earth
-            datatype: "globe-coordinate"
-
-  # -
-  #   file_path: "data/resumen_matricula_ee_2024_lite.csv"
-  #   encoding: "utf-8"
-  #   delimiter: ";"
-  #   decimal_separator: "."
-
-  #   item_mapping:
-  #     - 
-  #       update_action: "append_or_replace"
-  #       label_column: "NOM_RBD"
-
-  #       statements:
-  #         - 
-  #           property_label: "personas matriculadas"
-  #           value:
-  #             - {"column": "MAT_HOM_TOT"}
-  #           datatype: "quantity"
-  #           qualifiers:
-  #             - 
-  #               property_label: "año"
-  #               value: 
-  #                 - {"value": "+2024-01-01T00:00:00Z"}
-  #                 - {"value": 0}
-  #                 - {"value": 9}
-  #                 - {"value": "http://www.wikidata.org/entity/Q1985727"}
-  #               datatype: "time"
-  #             -
-  #               property_label: "identificador de género"
-  #               value: {"label": "hombre"}
-  #               datatype: "wikibase-item"
-  #         - 
-  #           property_label: "personas matriculadas"
-  #           value:
-  #             - {"column": "MAT_MUJ_TOT"}
-  #           datatype: "quantity"
-  #           qualifiers:
-  #             - 
-  #               property_label: "año"
-  #               value: 
-  #                 - {"value": "+2024-01-01T00:00:00Z"}
-  #                 - {"value": 0}
-  #                 - {"value": 9}
-  #                 - {"value": "http://www.wikidata.org/entity/Q1985727"}
-  #               datatype: "time"
-  #             -
-  #               property_label: "identificador de género"
-  #               value: {"label": "mujer"}
-  #               datatype: "wikibase-item"
-  #         -
-  #           property_label: "matrículados total"
-  #           value:
-  #             - {"column": "MAT_TOTAL"}
-  #           datatype: "quantity"
-  #           qualifiers:
-  #             - 
-  #               property_label: "año"
-  #               value: 
-  #                 - {"value": "+2024-01-01T00:00:00Z"}
-  #                 - {"value": 0}
-  #                 - {"value": 9}
-  #                 - {"value": "http://www.wikidata.org/entity/Q1985727"}
-  #               datatype: "time"
+                  - "+{AGNO}-01-01T00:00:00Z"
+                  - 0
+                  - 9
+                  - "http://www.wikidata.org/entity/Q1985727"
+              - property: "identificador de género"
+                value: 
+                  label: "hombre"
+          - property: "personas matriculadas"
+            value: "{MAT_MUJ_TOT}"
+            qualifiers:
+              - property: "año"
+                value: 
+                  - "+2024-01-01T00:00:00Z"
+                  - 0
+                  - 9
+                  - "http://www.wikidata.org/entity/Q1985727"
+              - property: "identificador de género"
+                value: 
+                  label: "mujer"
+          - property: "matrículados total"
+            value: "{MAT_TOTAL}"
+            qualifiers:
+              - property: "año"
+                value: 
+                  - "+2024-01-01T00:00:00Z"
+                  - 0
+                  - 9
+                  - "http://www.wikidata.org/entity/Q1985727"
 

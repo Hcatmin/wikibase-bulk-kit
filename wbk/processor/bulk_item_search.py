@@ -3,7 +3,7 @@ Performance-optimized bulk search for very large datasets
 Includes caching, indexing, and parallel processing
 """
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import pandas as pd
 import json
 from RaiseWikibase.dbconnection import DBConnection
@@ -24,6 +24,42 @@ class ItemBulkSearcher:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
+
+    def _normalize_unique_value(
+        self,
+        value: Any | None,
+        property_datatype: Optional[str] = None,
+    ) -> Optional[str]:
+        """Normalize unique-key values for comparison (datatype-aware)."""
+        if value is None:
+            return None
+
+        normalized: Any = value
+        if isinstance(normalized, dict):
+            normalized = (
+                normalized.get("amount")
+                or normalized.get("value")
+                or normalized.get("text")
+                or normalized.get("id")
+                or normalized
+            )
+
+        if property_datatype == "quantity":
+            try:
+                if isinstance(normalized, str) and normalized.startswith("+"):
+                    normalized = normalized[1:]
+                numeric = float(str(normalized))
+                if numeric.is_integer():
+                    normalized = str(int(numeric))
+                else:
+                    normalized = str(numeric)
+            except Exception:
+                normalized = str(normalized)
+        else:
+            normalized = str(normalized)
+
+        normalized = normalized.strip()
+        return normalized or None
     
     def _get_from_cache(self, labels: List[str]) -> Tuple[Dict[str, Optional[str]], List[str]]:
         """Get cached results and return uncached labels"""
@@ -322,6 +358,52 @@ class ItemBulkSearcher:
                 )
         
         return items_by_label
+    
+    def find_items_by_qids(
+        self,
+        qids: List[Any],
+        language: str = "en",
+        chunk_size: int = 1000,
+    ) -> Dict[str, dict]:
+        """Find items by QIDs and return full entity data."""
+        if not qids:
+            return {}
+
+        normalized: List[str] = []
+        for qid in qids:
+            if pd.isna(qid) or qid is None:
+                continue
+            qid_str = str(qid).strip()
+            if not qid_str:
+                continue
+            if not qid_str.upper().startswith("Q"):
+                qid_str = f"Q{qid_str}"
+            else:
+                qid_str = f"Q{qid_str[1:]}" if qid_str.startswith("q") else qid_str
+            normalized.append(qid_str)
+
+        normalized = list(dict.fromkeys(normalized))
+        if not normalized:
+            return {}
+
+        items_by_qid: Dict[str, dict] = {}
+        for i in range(0, len(normalized), chunk_size):
+            chunk = normalized[i : i + chunk_size]
+            chunk_items = self._bulk_find_items_with_data_by_qid_db(
+                chunk,
+                language=language,
+            )
+            items_by_qid.update(chunk_items)
+
+        for qid in normalized:
+            if qid not in items_by_qid:
+                items_by_qid[qid] = self._create_empty_item(
+                    item_qid=qid,
+                    item_label=qid,
+                    language=language,
+                )
+
+        return items_by_qid
     
     def _bulk_find_items_with_data_db(
         self,
@@ -644,7 +726,243 @@ class ItemBulkSearcher:
 
         return items_by_key
     
-   
+    def _bulk_find_items_with_data_by_qid_db(
+        self,
+        qids: List[str],
+        language: str = "en",
+    ) -> Dict[str, dict]:
+        """Bulk find items with full data keyed by QID."""
+        if not qids:
+            return {}
+
+        placeholders = ",".join(["%s"] * len(qids))
+        cur = self.connection.conn.cursor()
+
+        query = f"""
+        SELECT 
+            page.page_title as qid,
+            text.old_text as item_json
+        FROM page
+        LEFT JOIN text
+            ON text.old_id = page.page_latest
+        WHERE page.page_title IN ({placeholders})
+        """
+
+        items_by_qid: Dict[str, dict] = {}
+
+        try:
+            cur.execute(query, qids)
+            results = cur.fetchall()
+
+            for qid_text, item_json_text in results:
+                if isinstance(qid_text, bytes):
+                    qid_text = qid_text.decode("utf-8")
+
+                if item_json_text:
+                    try:
+                        if isinstance(item_json_text, bytes):
+                            item_json_text = item_json_text.decode("utf-8")
+                        item_json = json.loads(item_json_text)
+
+                        claims_dict = item_json.get("claims", {})
+                        labels_dict = item_json.get("labels", {})
+                        descriptions_dict = item_json.get("descriptions", {})
+
+                        item_entity = entity(
+                            labels=labels_dict if labels_dict else {},
+                            aliases={},
+                            descriptions=descriptions_dict if descriptions_dict else {},
+                            claims=claims_dict if claims_dict else {},
+                            etype="item",
+                        )
+                        item_entity["id"] = qid_text
+                        items_by_qid[qid_text] = item_entity
+                    except (json.JSONDecodeError, Exception) as e:
+                        print(
+                            f"Warning: Could not parse item JSON for {qid_text}: {e}. "
+                            f"Creating empty item structure."
+                        )
+                        items_by_qid[qid_text] = self._create_empty_item(
+                            item_qid=qid_text,
+                            item_label=qid_text,
+                            language=language,
+                        )
+                else:
+                    items_by_qid[qid_text] = self._create_empty_item(
+                        item_qid=qid_text,
+                        item_label=qid_text,
+                        language=language,
+                    )
+        except Exception as e:
+            print(f"Error in QID data bulk search: {e}")
+        finally:
+            cur.close()
+
+        return items_by_qid
+    
+
+    def _extract_claim_values(
+        self,
+        item_json: dict,
+        property_id: str,
+        property_datatype: Optional[str],
+    ) -> List[str]:
+        claims = item_json.get("claims") or {}
+        if property_id not in claims:
+            return []
+        values: List[str] = []
+        for claim_obj in claims.get(property_id, []):
+            mainsnak = claim_obj.get("mainsnak", {})
+            datavalue = mainsnak.get("datavalue", {})
+            raw_value = datavalue.get("value")
+            normalized = self._normalize_unique_value(raw_value, property_datatype)
+            if normalized is not None:
+                values.append(normalized)
+        return values
+
+    def _fetch_items_with_data(
+        self,
+        labels: List[str],
+        language: str = "en",
+    ) -> List[Tuple[str, Optional[str], Any]]:
+        """Fetch items (label, qid, json) for a list of labels without collapsing duplicates."""
+        if not labels:
+            return []
+
+        filtered_labels = []
+        for label_value in labels:
+            if pd.isna(label_value) or label_value is None or str(label_value).lower() in ["nan", "none", ""]:
+                continue
+            label_str = str(label_value).replace("'", "\\'")
+            filtered_labels.append(label_str)
+
+        if not filtered_labels:
+            return []
+
+        placeholders = ",".join(["%s"] * len(filtered_labels))
+        query = f"""
+        SELECT 
+            wbx_text as label,
+            CONCAT('Q', wbit_item_id) as item_qid,
+            text.old_text as item_json
+        FROM wbt_item_terms 
+        INNER JOIN wbt_term_in_lang ON wbit_term_in_lang_id = wbtl_id 
+        INNER JOIN wbt_text_in_lang ON wbtl_text_in_lang_id = wbxl_id 
+        INNER JOIN wbt_text ON wbxl_text_id = wbx_id 
+        LEFT JOIN page ON CAST(page.page_title AS CHAR) = CAST(CONCAT('Q', wbit_item_id) AS CHAR)
+        LEFT JOIN text ON text.old_id = page.page_latest
+        WHERE wbtl_type_id = 1 AND wbx_text IN ({placeholders})
+        """
+
+        cur = self.connection.conn.cursor()
+        rows: List[Tuple[str, Optional[str], Any]] = []
+        try:
+            cur.execute(query, filtered_labels)
+            results = cur.fetchall()
+            for label_text, item_qid, item_json_text in results:
+                if isinstance(label_text, bytes):
+                    label_text = label_text.decode("utf-8")
+                label_text = label_text.replace("\\'", "'")
+                rows.append((label_text, item_qid, item_json_text))
+        except Exception as e:
+            print(f"Error in unique-key bulk search: {e}")
+        finally:
+            cur.close()
+        return rows
+
+    def find_qids_by_unique_key(
+        self,
+        keys: List[Tuple[str, Optional[str]]],
+        property_id: str,
+        property_datatype: Optional[str] = None,
+        language: str = "en",
+    ) -> Dict[Tuple[str, Optional[str]], Optional[str]]:
+        """Find QIDs using (label, unique value) pairs scoped by a property."""
+        if not keys:
+            return {}
+
+        label_to_values: Dict[str, List[Optional[str]]] = {}
+        for label_value, unique_val in keys:
+            if label_value is None:
+                continue
+            label_str = str(label_value).strip()
+            if not label_str:
+                continue
+            normalized_value = self._normalize_unique_value(unique_val, property_datatype)
+            label_to_values.setdefault(label_str, []).append(normalized_value)
+
+        if not label_to_values:
+            return {}
+
+        rows = self._fetch_items_with_data(list(label_to_values.keys()), language=language)
+        results: Dict[Tuple[str, Optional[str]], Optional[str]] = {}
+
+        for label_text, item_qid, item_json_text in rows:
+            if not item_qid or not item_json_text:
+                continue
+            try:
+                if isinstance(item_json_text, bytes):
+                    item_json_text = item_json_text.decode("utf-8")
+                item_json = json.loads(item_json_text)
+            except Exception:
+                continue
+
+            claim_values = self._extract_claim_values(item_json, property_id, property_datatype)
+            expected_values = label_to_values.get(label_text, [])
+            for expected in expected_values:
+                if expected is None:
+                    continue
+                if expected in claim_values and (label_text, expected) not in results:
+                    results[(label_text, expected)] = item_qid
+        return results
+
+    def find_items_by_unique_key(
+        self,
+        keys: List[Tuple[str, Optional[str]]],
+        property_id: str,
+        property_datatype: Optional[str] = None,
+        language: str = "en",
+    ) -> Dict[Tuple[str, Optional[str]], dict]:
+        """Find items by (label, unique_value) pairs using the provided property as unique key."""
+        if not keys:
+            return {}
+
+        label_to_values: Dict[str, List[Optional[str]]] = {}
+        for label_value, unique_val in keys:
+            if label_value is None:
+                continue
+            label_str = str(label_value).strip()
+            if not label_str:
+                continue
+            normalized_value = self._normalize_unique_value(unique_val, property_datatype)
+            label_to_values.setdefault(label_str, []).append(normalized_value)
+
+        if not label_to_values:
+            return {}
+
+        rows = self._fetch_items_with_data(list(label_to_values.keys()), language=language)
+        items_by_key: Dict[Tuple[str, Optional[str]], dict] = {}
+
+        for label_text, item_qid, item_json_text in rows:
+            if not item_json_text:
+                continue
+            try:
+                if isinstance(item_json_text, bytes):
+                    item_json_text = item_json_text.decode("utf-8")
+                item_json = json.loads(item_json_text)
+            except Exception:
+                item_json = {}
+
+            claim_values = self._extract_claim_values(item_json, property_id, property_datatype)
+            expected_values = label_to_values.get(label_text, [])
+            for expected in expected_values:
+                if expected is None:
+                    continue
+                if expected not in claim_values:
+                    continue
+
+                # Build entity structure\n                claims_dict = item_json.get(\"claims\", {}) if item_json else {}\n                labels_dict = item_json.get(\"labels\", {}) if item_json else {}\n                descriptions_dict = item_json.get(\"descriptions\", {}) if item_json else {}\n\n                if not item_qid:\n                    item_entity = self._create_empty_item(\n                        item_qid=None, item_label=label_text, language=language\n                    )\n                else:\n                    item_entity = entity(\n                        labels=labels_dict if labels_dict else {},\n                        aliases={},\n                        descriptions=descriptions_dict if descriptions_dict else {},\n                        claims=claims_dict if claims_dict else {},\n                        etype=\"item\",\n                    )\n                    item_entity[\"id\"] = item_qid\n\n                items_by_key[(label_text, expected)] = item_entity\n\n        return items_by_key\n-   
+    
     def _create_empty_item(
         self,
         item_qid: Optional[str],

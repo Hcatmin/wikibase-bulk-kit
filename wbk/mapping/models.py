@@ -1,8 +1,12 @@
-"""Pydantic models for CSV to Wikibase mapping configurations."""
-
+from __future__ import annotations
+from typing import List, Union, Any, Dict
 from pydantic import BaseModel, Field
 from enum import Enum
-from typing import Union
+
+# Flexible value specification used throughout the mapping pipeline. Supports
+# raw literals, template strings, dictionaries, nested value definitions or
+# lists of any of these.
+ValueSpec = Union[str, List[Any], Dict[str, Any], "ValueDefinition", Any]
 
 class UpdateAction(str, Enum):
     APPEND_OR_REPLACE = "append_or_replace"
@@ -11,58 +15,44 @@ class UpdateAction(str, Enum):
     REPLACE_ALL = "replace_all"
     MERGE_REFS_OR_APPEND = "merge_refs_or_append"
 
-# Value specification types
-ValueSpec = Union[
-    str,  # Shorthand: column name
-    dict,  # Explicit: {"column": "col_name"} or {"value": "static"} or {"label": "label_name"}
-    list  # Tuple: [{"column": "col1"}, {"value": "static"}, ...]
-]
+class UniqueKey(BaseModel):
+    property: str = Field(..., description="Property label for the unique key")
+    value: str = Field(..., description="Value template for the unique key (e.g. '{column}')")
 
-class ClaimMapping(BaseModel):
-    property_id: str | None = Field(None, description="Property ID")
-    property_label: str | None = Field(None, description="Property label")
-    value: ValueSpec | None = Field(None, description="Value specification: column name (str), explicit dict, or tuple list")
-    datatype: str = Field(..., description="Datatype")
+class ItemDefinition(BaseModel):
+    label: str = Field(..., description="Label template")
+    unique_key: UniqueKey | None = None
+    description: str | None = None
 
-
-class StatementMapping(BaseModel):
-    property_id: str | None = Field(None, description="Property ID")
-    property_label: str | None = Field(None, description="Property label")
-    value: ValueSpec | None = Field(None, description="Value specification: column name (str), explicit dict, or tuple list")
-    datatype: str = Field(..., description="Datatype")
-    qualifiers: list[ClaimMapping] | None = Field(default_factory=list, description="Qualifiers")
-    references: list[ClaimMapping] | None = Field(default_factory=list, description="References")
-    rank: str | None = Field(None, description="Rank")
-
-
-class ItemMapping(BaseModel):
-    update_action: UpdateAction | None = Field(None, description="Action to take when updating the item")
-
-    label_column: str = Field(..., description="The column that contains the item label")
-    description: str | None = Field(None, description="Static description or built from other columns")
-    aliases_columns: list[str] = Field(default_factory=list, description="Columns that contain item aliases")
-    statements: list[StatementMapping] | None = Field(None, description="Default statements")
-
+class ValueDefinition(BaseModel):
+    label: str | None = None
+    unique_key: UniqueKey | None = None
+    
+class StatementDefinition(BaseModel):
+    property: str = Field(..., description="Property label")
+    value: Union[str, List[Any], ValueDefinition, Any] = Field(..., description="Value specification")
+    qualifiers: list[StatementDefinition] | None = None
+    references: list[StatementDefinition] | None = None
+    rank: str | None = None
+    
+class MappingRule(BaseModel):
+    update_action: UpdateAction | None = None
+    item: ItemDefinition
+    statements: List[StatementDefinition] | None = None
 
 class CSVFileConfig(BaseModel):
-    file_path: str = Field(..., description="Path to the CSV file")
-    encoding: str | None = Field(None, description="Specific file encoding")
-    delimiter: str | None = Field(None, description="Specific CSV delimiter")
-    decimal_separator: str | None = Field(None, description="Specific decimal separator")
+    file_path: str
+    encoding: str | None = None
+    delimiter: str | None = None
+    decimal_separator: str | None = None
 
-    update_action: UpdateAction | None = Field(None, description="Action to take when updating the item")
-
-    item_mapping: list[ItemMapping] | None = Field(None, description="Item mapping")
-
+    update_action: UpdateAction | None = None
+    mappings: List[MappingRule]
 
 class MappingConfig(BaseModel):
-    """Main mapping configuration for CSV to Wikibase transformation."""
-    name: str = Field(..., description="Mapping configuration name")
-    description: str | None = Field(None, description="Mapping description")
-    language: str = Field("en", description="Language code")
-
-    encoding: str = Field("utf-8", description="Default file encoding")
-    delimiter: str = Field(",", description="Default CSV delimiter")
-    decimal_separator: str = Field(".", description="Default decimal separator")
-    
-    csv_files: list[CSVFileConfig] = Field(..., description="CSV files to process")
+    name: str
+    language: str = "es"
+    encoding: str = "utf-8"
+    delimiter: str = ","
+    decimal_separator: str = "."
+    csv_files: List[CSVFileConfig]

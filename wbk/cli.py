@@ -6,7 +6,7 @@ from rich.console import Console
 import sys
 
 from wbk.config.manager import ConfigManager
-from wbk.mapping import MappingProcessor
+from wbk.mapping.processor import MappingProcessor
 from wbk.schema.sync import SchemaSyncer
 
 console = Console()

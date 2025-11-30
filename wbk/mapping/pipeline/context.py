@@ -2,89 +2,184 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Iterable
+from dataclasses import dataclass
+from typing import Iterable, Tuple, Dict, Any
 
 from RaiseWikibase.dbconnection import DBConnection
 from wbk.processor.bulk_item_search import ItemBulkSearcher
 
-from ..models import StatementMapping, ClaimMapping
+from ..models import StatementDefinition, UniqueKey, ValueDefinition
 
 
-def _iter_claims(schema: list[ClaimMapping] | list[StatementMapping] | None):
+def _iter_claims(schema: list[StatementDefinition] | None):
     if not schema:
         return []
-    return [claim for claim in schema if getattr(claim, "property_label", None)]
+    return [claim for claim in schema if getattr(claim, "property", None)]
 
 
 @dataclass
 class MappingContext:
     """Holds cross-cutting collaborators for the mapping pipeline."""
 
-    language: str
-    pid_cache: dict[str, str] = field(default_factory=dict)
-    qid_cache: dict[str | tuple[str, str | None], str] = field(default_factory=dict)
-    db_connection: DBConnection = field(default_factory=DBConnection)
+    def __init__(self, language: str) -> None:
+        self.language = language
+        # property label -> {"id": pid, "datatype": datatype}
+        self.pid_cache: dict[str, Dict[str, str | None]] = {}
+        # label -> qid cache (label-only lookups)
+        self.qid_cache_label: dict[str, str] = {}
+        # (label, property_id, unique_value) -> qid
+        self.qid_cache_unique: dict[tuple[str, str, str], str] = {}
+        self.db_connection = DBConnection()
 
-    def ensure_pids(self, statements: list[StatementMapping] | None) -> None:
-        """Populate the PID cache using property labels found in statements."""
-
-        def _maybe_add(property_label: str | None):
-            if not property_label or property_label in self.pid_cache:
-                return
-            self.pid_cache[property_label] = (
-                self.db_connection.find_property_id(property_label)
-            )
-
-        if not statements:
-            return
-
-        for statement in statements:
-            _maybe_add(statement.property_label)
-            for qualifier in _iter_claims(statement.qualifiers):
-                _maybe_add(qualifier.property_label)
-            for reference in _iter_claims(statement.references):
-                _maybe_add(reference.property_label)
-
-    def ensure_qids(
+    def ensure_properties(
         self,
-        label_description_pairs: Iterable[tuple[str, str | None]],
+        statements: list[StatementDefinition] | None = None,
+        unique_keys: Iterable[UniqueKey] | None = None,
     ) -> None:
-        """Populate the QID cache for the provided value statements."""
+        """Populate the property cache (id + datatype) using labels found in statements and unique keys."""
+        labels: set[str] = set()
+
+        def _collect_unique_key_from_value(value_spec: Any):
+            """Recursively collect property labels from ValueDefinition.unique_key."""
+            if isinstance(value_spec, ValueDefinition):
+                if value_spec.unique_key and value_spec.unique_key.property:
+                    labels.add(value_spec.unique_key.property)
+                return
+            if isinstance(value_spec, list):
+                for elem in value_spec:
+                    _collect_unique_key_from_value(elem)
+
+        def _collect_from_statement(statement: StatementDefinition):
+            labels.add(statement.property)
+            _collect_unique_key_from_value(statement.value)
+            for qualifier in _iter_claims(statement.qualifiers):
+                labels.add(qualifier.property)
+                _collect_unique_key_from_value(qualifier.value)
+            for reference in _iter_claims(statement.references):
+                labels.add(reference.property)
+                _collect_unique_key_from_value(reference.value)
+
+        if statements:
+            for stmt in statements:
+                _collect_from_statement(stmt)
+
+        if unique_keys:
+            for uk in unique_keys:
+                if uk and uk.property:
+                    labels.add(uk.property)
+
+        for label in labels:
+            if label in self.pid_cache:
+                continue
+            pid, datatype = self.db_connection.find_property_info(label)
+            if not pid:
+                raise ValueError(f"Property not found: {label}")
+            self.pid_cache[label] = {"id": pid, "datatype": datatype}
+
+    def ensure_qids_for_labels(self, labels: Iterable[str]) -> None:
+        """Populate qid cache for label-only wikibase-item references."""
+        normalized = [self._normalize_term(lbl) for lbl in labels]
+        normalized = [lbl for lbl in normalized if lbl]
+        if not normalized:
+            return
         with ItemBulkSearcher() as item_searcher:
-            qids_found = item_searcher.find_qids(label_description_pairs)
+            qids_found = item_searcher.find_items_by_labels_optimized(list(dict.fromkeys(normalized)))
+        for label, qid in qids_found.items():
+            if qid:
+                self.qid_cache_label[label] = qid
 
-        self.qid_cache.update(qids_found)
-        
-    def get_property_id(
+    def ensure_qids_for_unique_keys(
         self,
-        property_id: str | None,
-        property_label: str | None,
-    ) -> str:
+        keys: Iterable[Tuple[str, str]],
+        property_id: str,
+        property_datatype: str | None,
+    ) -> None:
+        """Populate qid cache for label + unique_key combinations."""
+        normalized_keys = []
+        for label, value in keys:
+            norm_label = self._normalize_term(label)
+            norm_value = self._normalize_unique_value(value, property_datatype)
+            if norm_label and norm_value:
+                normalized_keys.append((norm_label, norm_value))
+        if not normalized_keys:
+            return
+        with ItemBulkSearcher() as item_searcher:
+            qids_found = item_searcher.find_qids_by_unique_key(
+                normalized_keys,
+                property_id=property_id,
+                property_datatype=property_datatype,
+                language=self.language,
+            )
+        for (label, value), qid in qids_found.items():
+            if qid:
+                norm_label = self._normalize_term(label)
+                norm_value = self._normalize_unique_value(value, property_datatype)
+                if norm_label and norm_value:
+                    self.qid_cache_unique[(norm_label, property_id, norm_value)] = qid
+
+    def get_property_info(self, property_label_or_id: str) -> tuple[str, str | None]:
+        """Resolve property id and datatype by label or id."""
+        if property_label_or_id in self.pid_cache:
+            info = self.pid_cache[property_label_or_id]
+            return info["id"], info.get("datatype")
+
+        pid, datatype = self.db_connection.find_property_info(property_label_or_id)
+        if pid and property_label_or_id:
+            self.pid_cache[property_label_or_id] = {"id": pid, "datatype": datatype}
+        return pid, datatype
+
+    def get_property_id(self, property_label_or_id: str | None) -> str:
         """Resolve a property identifier from an id or label."""
-        if property_id:
-            return property_id
-        if property_label and property_label in self.pid_cache:
-            return self.pid_cache[property_label]
-        raise ValueError("Property id or property label is required")
+        if not property_label_or_id:
+            raise ValueError("Property label or id is required")
+        pid, _ = self.get_property_info(property_label_or_id)
+        if not pid:
+            raise ValueError(f"Property not found: {property_label_or_id}")
+        return pid
 
-    def get_qid(self, label_or_qid: str | tuple[str, str | None]) -> str | None:
-        """Return a QID for a provided label/description pair or QID literal."""
-        if isinstance(label_or_qid, tuple):
-            label_value, description_value = label_or_qid
-            normalized_label = self._normalize_term(label_value)
-            normalized_description = self._normalize_term(description_value)
-            if not normalized_label:
-                return None
-            return self.qid_cache.get((normalized_label, normalized_description)) or self.qid_cache.get(normalized_label)
+    def get_property_datatype(self, property_label_or_id: str) -> str | None:
+        """Return cached property datatype."""
+        _, datatype = self.get_property_info(property_label_or_id)
+        return datatype
 
-        if (
-            label_or_qid.startswith("Q")
-            and len(label_or_qid) > 1
-            and label_or_qid[1:].isdigit()
-        ):
-            return label_or_qid
-        return self.qid_cache.get((label_or_qid, None))
+    def get_qid_by_label(self, label: str | None) -> str | None:
+        """Return qid for label-only lookup."""
+        norm = self._normalize_term(label)
+        if not norm:
+            return None
+        if norm in self.qid_cache_label:
+            return self.qid_cache_label[norm]
+        return None
+
+    def get_qid_by_unique_key(
+        self,
+        label: str | None,
+        property_label_or_id: str,
+        value: str | None,
+    ) -> str | None:
+        """Return qid for a label + unique key combination (property/value)."""
+        norm_label = self._normalize_term(label)
+        property_id, property_datatype = self.get_property_info(property_label_or_id)
+        norm_value = self._normalize_unique_value(value, property_datatype)
+        if not norm_label or not norm_value:
+            return None
+
+        cached = self.qid_cache_unique.get((norm_label, property_id, norm_value))
+        if cached:
+            return cached
+
+        # Fallback to on-demand lookup
+        with ItemBulkSearcher() as item_searcher:
+            found = item_searcher.find_qids_by_unique_key(
+                [(norm_label, norm_value)],
+                property_id=property_id,
+                property_datatype=self.get_property_datatype(property_label_or_id),
+                language=self.language,
+            )
+        qid = found.get((norm_label, norm_value))
+        if qid:
+            self.qid_cache_unique[(norm_label, property_id, norm_value)] = qid
+        return qid
 
     def verify_items_created(self) -> None:
         """Run a light-weight verification against the DBConnection."""
@@ -113,3 +208,36 @@ class MappingContext:
             return None
         term_str = str(term).strip()
         return term_str or None
+
+    @staticmethod
+    def _normalize_unique_value(value: Any | None, datatype: str | None) -> str | None:
+        """Normalize unique key values consistently with item search."""
+        if value is None:
+            return None
+
+        normalized = value
+        if isinstance(normalized, dict):
+            normalized = (
+                normalized.get("amount")
+                or normalized.get("value")
+                or normalized.get("text")
+                or normalized.get("id")
+                or normalized
+            )
+
+        if datatype == "quantity":
+            try:
+                if isinstance(normalized, str) and normalized.startswith("+"):
+                    normalized = normalized[1:]
+                numeric = float(str(normalized))
+                if numeric.is_integer():
+                    normalized = str(int(numeric))
+                else:
+                    normalized = str(numeric)
+            except Exception:
+                normalized = str(normalized)
+        else:
+            normalized = str(normalized)
+
+        normalized = normalized.strip()
+        return normalized or None

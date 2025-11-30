@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import copy
 from abc import ABC, abstractmethod
-from typing import Iterable, Type, Any, NamedTuple
+from typing import Type, Any, NamedTuple
 
 import pandas as pd
 
 from RaiseWikibase.datamodel import entity, label, description
 from RaiseWikibase.raiser import batch
+from RaiseWikibase.utils import is_same_claim
 
-from ..models import ItemMapping, UpdateAction, StatementMapping, CSVFileConfig
+from ..models import MappingRule, UpdateAction, StatementDefinition, CSVFileConfig
 from .context import MappingContext
 from .claim_builder import ClaimBuilder
 from wbk.processor.bulk_item_search import ItemBulkSearcher
-import re
 
 
 class BatchMixin:
@@ -27,87 +27,48 @@ class BatchMixin:
         batch("wikibase-item", items, new=new)
         items.clear()
 
-    def _get_columns(
-        self,
-        from_template: str,
-        dataframe_columns: Iterable[str],
-    ) -> list[str]:
-        list_columns = re.findall(r"\{(.*?)\}", from_template)
-        assert set(list_columns) <= set(dataframe_columns)  # template columns must be in dataframe
-        return list_columns
-
-    def _build_description_value(
-        self,
-        item_mapping: ItemMapping,
-        row: pd.Series,
-        template_columns: list[str],
-        description_from_column: bool,
-    ) -> str | None:
-        if not item_mapping.description:
-            return None
-        if template_columns:
-            description_template = item_mapping.description
-            for col in template_columns:
-                description_template = description_template.replace(
-                    "{" + col + "}",
-                    str(row[col]),
-                )
-            return description_template
-        if description_from_column:
-            return str(row[item_mapping.description])
-        return item_mapping.description
-
-    @staticmethod
-    def _normalize_description_key(description_value: str | None) -> str | None:
-        if description_value is None:
-            return None
-        normalized = str(description_value).strip()
-        return normalized or None
-
 
 class CreateItemsStep(BatchMixin):
     """Handles creation of new items in chunks."""
 
-    def __init__(
-        self,
-        claim_builder: ClaimBuilder | None = None,
-        chunk_size: int = 1000,
-    ) -> None:
+    def __init__(self, claim_builder: ClaimBuilder | None = None) -> None:
         self.claim_builder = claim_builder or ClaimBuilder()
-        self.chunk_size = chunk_size
+
+    def _maybe_build_unique_key_statement(
+        self, mapping_rule: MappingRule
+    ) -> StatementDefinition | None:
+        uk = mapping_rule.item.unique_key
+        if not uk:
+            return None
+        if any(
+            stmt.property == uk.property for stmt in (mapping_rule.statements or [])
+        ):
+            return None
+        return StatementDefinition(property=uk.property, value=uk.value)
 
     def run(
         self,
         dataframe: pd.DataFrame,
-        item_mapping: ItemMapping,
+        mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
         if dataframe.empty:
             return
 
+        statements = list(mapping_rule.statements or [])
+        extra_uk = self._maybe_build_unique_key_statement(mapping_rule)
+        if extra_uk:
+            statements.append(extra_uk)
+
         items: list[dict] = []
-
-        list_columns = self._get_columns(
-            item_mapping.description,
-            dataframe.columns
-        ) if item_mapping.description else []
         for _, row in dataframe.iterrows():
-            item_name = str(row[item_mapping.label_column])
-            labels = label(context.language, item_name)
+            item_label = str(row.get("__label", ""))
+            labels = label(context.language, item_label)
 
-            if item_mapping.description:
-                description_template = item_mapping.description
-                for col in list_columns:
-                    description_template = description_template.replace(
-                        "{" + col + "}",
-                        str(row[col])
-                    )
-                descriptions = description(
-                    context.language,
-                    description_template
-                )
-            else:
-                descriptions = {}
+            descriptions = {}
+            description_value = row.get("__description") if "__description" in row else None
+            if pd.notna(description_value):
+                descriptions = description(context.language, str(description_value))
 
             item = entity(
                 labels=labels,
@@ -120,7 +81,7 @@ class CreateItemsStep(BatchMixin):
             self.claim_builder.apply_statements(
                 item,
                 row,
-                item_mapping.statements,
+                statements,
                 context,
             )
             items.append(item)
@@ -135,22 +96,18 @@ class UpdateStrategy(BatchMixin, ABC):
     class RowContext(NamedTuple):
         row: pd.Series
         label: str
-        description_value: str | None
-        normalized_description: str | None
+        unique_value: Any | None
+        description_value: Any | None
+        qid: str | None
 
-    def __init__(
-        self,
-        claim_builder: ClaimBuilder | None = None,
-        chunk_size: int = 1000,
-    ) -> None:
+    def __init__(self, claim_builder: ClaimBuilder | None = None) -> None:
         self.claim_builder = claim_builder or ClaimBuilder()
-        self.chunk_size = chunk_size
 
     @abstractmethod
     def run(
         self,
         dataframe: pd.DataFrame,
-        item_mapping: ItemMapping,
+        mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
         raise NotImplementedError
@@ -158,55 +115,55 @@ class UpdateStrategy(BatchMixin, ABC):
     def _prepare_row_contexts(
         self,
         dataframe: pd.DataFrame,
-        item_mapping: ItemMapping,
+        mapping_rule: MappingRule,
     ) -> list["UpdateStrategy.RowContext"]:
         if dataframe.empty:
             return []
 
-        list_columns = (
-            self._get_columns(item_mapping.description, dataframe.columns)
-            if item_mapping.description
-            else []
-        )
-        description_from_column = (
-            item_mapping.description
-            and not list_columns
-            and item_mapping.description in dataframe.columns
-        )
-
         contexts: list[UpdateStrategy.RowContext] = []
         for _, row in dataframe.iterrows():
-            item_label = str(row[item_mapping.label_column])
-            description_value = self._build_description_value(
-                item_mapping,
-                row,
-                list_columns,
-                bool(description_from_column),
-            )
-            normalized_description = self._normalize_description_key(description_value)
+            label_value = str(row.get("__label", ""))
+            unique_value = row.get("__unique_key_value")
+            description_value = row.get("__description") if "__description" in row else None
+            qid = row.get("__qid")
             contexts.append(
                 UpdateStrategy.RowContext(
                     row=row,
-                    label=item_label,
+                    label=label_value,
+                    unique_value=unique_value,
                     description_value=description_value,
-                    normalized_description=normalized_description,
+                    qid=qid,
                 )
             )
         return contexts
 
+    def _build_unique_key_statement(self, mapping_rule: MappingRule) -> StatementDefinition | None:
+        uk = mapping_rule.item.unique_key
+        if not uk:
+            return None
+        if any(stmt.property == uk.property for stmt in (mapping_rule.statements or [])):
+            return None
+        return StatementDefinition(property=uk.property, value=uk.value)
+
+    def _statements_with_unique_key(self, mapping_rule: MappingRule) -> list[StatementDefinition]:
+        statements = list(mapping_rule.statements or [])
+        extra = self._build_unique_key_statement(mapping_rule)
+        if extra:
+            statements.append(extra)
+        return statements
+
     @staticmethod
-    def _collect_lookup_keys(
-        contexts: list["UpdateStrategy.RowContext"],
-    ) -> list[tuple[str, str | None]]:
-        keys: list[tuple[str, str | None]] = []
-        seen: set[tuple[str, str | None]] = set()
-        for context in contexts:
-            key = (context.label, context.normalized_description)
-            if key in seen:
-                continue
-            seen.add(key)
-            keys.append(key)
-        return keys
+    def _normalize_qid(qid: Any | None) -> str | None:
+        if qid is None or pd.isna(qid):
+            return None
+        qid_str = str(qid).strip()
+        if not qid_str:
+            return None
+        if not qid_str.upper().startswith("Q"):
+            return f"Q{qid_str}"
+        if qid_str.startswith("q"):
+            return f"Q{qid_str[1:]}"
+        return qid_str
 
 
 class ReplaceAllStrategy(UpdateStrategy):
@@ -215,34 +172,27 @@ class ReplaceAllStrategy(UpdateStrategy):
     def run(
         self,
         dataframe: pd.DataFrame,
-        item_mapping: ItemMapping,
+        mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
         if dataframe.empty:
             return
 
-        contexts = self._prepare_row_contexts(dataframe, item_mapping)
-        if not contexts:
-            return
-
-        keys = self._collect_lookup_keys(contexts)
-        with ItemBulkSearcher() as item_searcher:
-            qids = item_searcher.find_qids(keys)
-
+        statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
-        for row_ctx in contexts:
-            key = (row_ctx.label, row_ctx.normalized_description)
-            qid = qids.get(key)
-            if not qid and row_ctx.normalized_description:
-                qid = qids.get((row_ctx.label, None))
+        for _, row in dataframe.iterrows():
+            qid = self._normalize_qid(row.get("__qid"))
             if not qid:
                 continue
 
-            labels = label(context.language, row_ctx.label)
-            if row_ctx.description_value:
-                descriptions = description(context.language, row_ctx.description_value)
-            else:
-                descriptions = {}
+            label_value = str(row.get("__label", ""))
+            labels = label(context.language, label_value)
+            description_value = row.get("__description") if "__description" in row else None
+            descriptions = (
+                description(context.language, str(description_value))
+                if description_value not in (None, "")
+                else {}
+            )
 
             item = entity(
                 labels=labels,
@@ -253,9 +203,7 @@ class ReplaceAllStrategy(UpdateStrategy):
             )
             item["id"] = qid
 
-            self.claim_builder.apply_statements(
-                item, row_ctx.row, item_mapping.statements, context
-            )
+            self.claim_builder.apply_statements(item, row, statements, context)
             items.append(item)
 
         self._flush_items(items, new=False)
@@ -267,72 +215,80 @@ class AppendOrReplaceStrategy(UpdateStrategy):
     def run(
         self,
         dataframe: pd.DataFrame,
-        item_mapping: ItemMapping,
+        mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
         if dataframe.empty:
             return
 
-        from RaiseWikibase.utils import is_same_claim  # local import to avoid cycles
-
-        contexts = self._prepare_row_contexts(dataframe, item_mapping)
+        contexts = self._prepare_row_contexts(dataframe, mapping_rule)
         if not contexts:
             return
 
-        keys = self._collect_lookup_keys(contexts)
-        
+        qids = [
+            qid
+            for qid in (
+                self._normalize_qid(ctx.qid) for ctx in contexts
+            )
+            if qid
+        ]
+        if not qids:
+            return
+
         with ItemBulkSearcher() as item_searcher:
-            items_by_key = item_searcher.find_items(
-                keys,
+            items_by_qid = item_searcher.find_items_by_qids(
+                qids,
                 language=context.language,
             )
 
+        statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
         for row_ctx in contexts:
-            key = (row_ctx.label, row_ctx.normalized_description)
-            existing_item = items_by_key.get(key) or items_by_key.get((row_ctx.label, None))
+            qid = self._normalize_qid(row_ctx.qid)
+            if not qid:
+                continue
+
+            existing_item = items_by_qid.get(qid)
             if not existing_item:
                 continue
 
             existing_item = copy.deepcopy(existing_item)
             existing_item["labels"] = label(context.language, row_ctx.label)
 
-            if row_ctx.description_value:
+            if row_ctx.description_value not in (None, ""):
                 existing_item["descriptions"] = description(
-                    context.language, row_ctx.description_value
+                    context.language, str(row_ctx.description_value)
                 )
 
-            if item_mapping.statements:
-                for statement in item_mapping.statements:
-                    new_claim_dict = self.claim_builder.build_claim(
-                        statement, row_ctx.row, context
-                    )
-                    if not new_claim_dict:
-                        continue
+            for statement in statements:
+                new_claim_dict = self.claim_builder.build_claim(
+                    statement, row_ctx.row, context
+                )
+                if not new_claim_dict:
+                    continue
 
-                    property_id = context.get_property_id(
-                        statement.property_id, statement.property_label
-                    )
-                    new_claim = new_claim_dict[property_id][0]
+                property_id_stmt, _ = context.get_property_info(statement.property)
+                if not property_id_stmt:
+                    continue
 
-                    claims = existing_item.setdefault("claims", {})
-                    if property_id in claims:
-                        existing_claims = claims[property_id]
-                        claim_found = False
-                        for idx, existing_claim in enumerate(
-                            existing_claims
-                        ):
-                            if is_same_claim(new_claim, existing_claim):
-                                if existing_claim.get("id"):
-                                    new_claim["id"] = existing_claim["id"]
-                                existing_claims[idx] = new_claim
-                                claim_found = True
-                                break
+                new_claim = new_claim_dict[property_id_stmt][0]
 
-                        if not claim_found:
-                            existing_claims.append(new_claim)
-                    else:
-                        claims[property_id] = [new_claim]
+                claims = existing_item.setdefault("claims", {})
+                if property_id_stmt in claims:
+                    existing_claims = claims[property_id_stmt]
+                    claim_found = False
+                    for idx, existing_claim in enumerate(existing_claims):
+                        if is_same_claim(new_claim, existing_claim):
+                            if existing_claim.get("id"):
+                                new_claim["id"] = existing_claim["id"]
+                            existing_claims[idx] = new_claim
+                            claim_found = True
+                            break
+
+                    if not claim_found:
+                        existing_claims.append(new_claim)
+                else:
+                    claims[property_id_stmt] = [new_claim]
 
             items.append(existing_item)
 
@@ -345,53 +301,66 @@ class ForceAppendStrategy(UpdateStrategy):
     def run(
         self,
         dataframe: pd.DataFrame,
-        item_mapping: ItemMapping,
+        mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
         if dataframe.empty:
             return
 
-        contexts = self._prepare_row_contexts(dataframe, item_mapping)
+        contexts = self._prepare_row_contexts(dataframe, mapping_rule)
         if not contexts:
             return
 
-        keys = self._collect_lookup_keys(contexts)
+        qids = [
+            qid
+            for qid in (
+                self._normalize_qid(ctx.qid) for ctx in contexts
+            )
+            if qid
+        ]
+        if not qids:
+            return
+
         with ItemBulkSearcher() as item_searcher:
-            items_by_key = item_searcher.find_items(
-                keys,
+            items_by_qid = item_searcher.find_items_by_qids(
+                qids,
                 language=context.language,
             )
 
+        statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
         for row_ctx in contexts:
-            key = (row_ctx.label, row_ctx.normalized_description)
-            existing_item = items_by_key.get(key) or items_by_key.get((row_ctx.label, None))
+            qid = self._normalize_qid(row_ctx.qid)
+            if not qid:
+                continue
+
+            existing_item = items_by_qid.get(qid)
             if not existing_item:
                 continue
 
             existing_item = copy.deepcopy(existing_item)
             existing_item["labels"] = label(context.language, row_ctx.label)
 
-            if row_ctx.description_value:
+            if row_ctx.description_value not in (None, ""):
                 existing_item["descriptions"] = description(
-                    context.language, row_ctx.description_value
+                    context.language, str(row_ctx.description_value)
                 )
 
-            if item_mapping.statements:
-                for statement in item_mapping.statements:
-                    new_claim_dict = self.claim_builder.build_claim(
-                        statement, row_ctx.row, context
-                    )
-                    if not new_claim_dict:
-                        continue
+            for statement in statements:
+                new_claim_dict = self.claim_builder.build_claim(
+                    statement, row_ctx.row, context
+                )
+                if not new_claim_dict:
+                    continue
 
-                    property_id = context.get_property_id(
-                        statement.property_id, statement.property_label
-                    )
-                    new_claim = new_claim_dict[property_id][0]
+                property_id_stmt, _ = context.get_property_info(statement.property)
+                if not property_id_stmt:
+                    continue
 
-                    claims = existing_item.setdefault("claims", {})
-                    claims.setdefault(property_id, []).append(new_claim)
+                new_claim = new_claim_dict[property_id_stmt][0]
+
+                claims = existing_item.setdefault("claims", {})
+                claims.setdefault(property_id_stmt, []).append(new_claim)
 
             items.append(existing_item)
 
@@ -404,41 +373,55 @@ class KeepStrategy(UpdateStrategy):
     def run(
         self,
         dataframe: pd.DataFrame,
-        item_mapping: ItemMapping,
+        mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
-        if dataframe.empty or not item_mapping.statements:
+        if dataframe.empty or not mapping_rule.statements:
             return
 
-        kept_claims = 0
-        appended_claims = 0
-
-        contexts = self._prepare_row_contexts(dataframe, item_mapping)
+        contexts = self._prepare_row_contexts(dataframe, mapping_rule)
         if not contexts:
             return
 
-        keys = self._collect_lookup_keys(contexts)
+        qids = [
+            qid
+            for qid in (
+                self._normalize_qid(ctx.qid) for ctx in contexts
+            )
+            if qid
+        ]
+        if not qids:
+            return
+
         with ItemBulkSearcher() as item_searcher:
-            items_by_key = item_searcher.find_items(
-                keys,
+            items_by_qid = item_searcher.find_items_by_qids(
+                qids,
                 language=context.language,
             )
+
+        statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
+        kept_claims = 0
+        appended_claims = 0
 
         for row_ctx in contexts:
-            key = (row_ctx.label, row_ctx.normalized_description)
-            existing_item = items_by_key.get(key) or items_by_key.get((row_ctx.label, None))
+            qid = self._normalize_qid(row_ctx.qid)
+            if not qid:
+                continue
+
+            existing_item = items_by_qid.get(qid)
             if not existing_item or not existing_item.get("id"):
                 continue
 
             current_claims = existing_item.get("claims") or {}
             modified_item = None
 
-            for statement in item_mapping.statements:
-                property_id = context.get_property_id(
-                    statement.property_id, statement.property_label
-                )
-                if property_id in current_claims:
+            for statement in statements:
+                property_id_stmt, _ = context.get_property_info(statement.property)
+                if not property_id_stmt:
+                    continue
+
+                if property_id_stmt in current_claims:
                     kept_claims += 1
                     continue
 
@@ -453,14 +436,14 @@ class KeepStrategy(UpdateStrategy):
                     modified_item["labels"] = label(
                         context.language, row_ctx.label
                     )
-                    if row_ctx.description_value:
+                    if row_ctx.description_value not in (None, ""):
                         modified_item["descriptions"] = description(
-                            context.language, row_ctx.description_value
+                            context.language, str(row_ctx.description_value)
                         )
                     modified_item.setdefault("claims", current_claims)
                     current_claims = modified_item["claims"]
 
-                current_claims[property_id] = new_claim_dict[property_id]
+                current_claims[property_id_stmt] = new_claim_dict[property_id_stmt]
                 appended_claims += 1
 
             if modified_item:
@@ -480,7 +463,7 @@ class MergeRefsOrAppendStrategy(UpdateStrategy):
     def run(
         self,
         dataframe: pd.DataFrame,
-        item_mapping: ItemMapping,
+        mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
         raise NotImplementedError("MERGE_REFS_OR_APPEND strategy not implemented yet.")
@@ -504,10 +487,10 @@ class UpdateStrategyFactory:
     def for_mapping(
         cls,
         csv_config: CSVFileConfig,
-        item_mapping: ItemMapping,
+        mapping_rule: MappingRule,
         claim_builder: ClaimBuilder | None = None,
     ) -> UpdateStrategy | None:
-        action = item_mapping.update_action or csv_config.update_action
+        action = mapping_rule.update_action or csv_config.update_action
         if not action:
             return None
         strategy_cls = cls.STRATEGY_MAP.get(action)
