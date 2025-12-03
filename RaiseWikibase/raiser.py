@@ -4,6 +4,7 @@ from RaiseWikibase.utils import get_ip, execute_shell
 from RaiseWikibase.settings import Settings
 import uuid
 import json
+import sys
 from tqdm import tqdm
 
 
@@ -166,3 +167,15 @@ def building_indexing():
         'docker exec ' +
         container +
         ' bash "-c" "php maintenance/runJobs.php"')
+
+def update_links():
+    """Updates the links tables for Special:WhatLinksHere"""
+    connection = DBConnection()
+    container = connection.docker_wikibase
+    connection.conn.close()
+    
+    # Update links tables for Special:WhatLinksHere
+    execute_shell(
+        'docker exec ' +
+        container +
+        ' bash "-c" "php maintenance/refreshLinks.php"')
