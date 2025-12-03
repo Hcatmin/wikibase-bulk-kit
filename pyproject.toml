@@ -4,7 +4,10 @@ version = "0.1.0"
 description = ""
 authors = ["Roberto Alvarado <ralvarado@sawa.cl>"]
 readme = "README.md"
-packages = [{include = "wbk"}]
+packages = [
+    {include = "wbk"},
+    {include = "RaiseWikibase"}
+]
 
 [tool.poetry.dependencies]
 python = "^3.12"
