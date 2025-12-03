@@ -14,6 +14,7 @@ class UpdateAction(str, Enum):
     KEEP = "keep"
     REPLACE_ALL = "replace_all"
     MERGE_REFS_OR_APPEND = "merge_refs_or_append"
+    MERGE_QUALIFIERS_OR_APPEND = "merge_qualifiers_or_append"
 
 class UniqueKey(BaseModel):
     property: str = Field(..., description="Property label for the unique key")

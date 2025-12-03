@@ -10,7 +10,7 @@ import pandas as pd
 
 from RaiseWikibase.datamodel import entity, label, description
 from RaiseWikibase.raiser import batch
-from RaiseWikibase.utils import is_same_claim
+from RaiseWikibase.utils import is_same_claim, is_same_snak
 
 from ..models import MappingRule, UpdateAction, StatementDefinition, CSVFileConfig
 from .context import MappingContext
@@ -26,6 +26,18 @@ class BatchMixin:
             return
         batch("wikibase-item", items, new=new)
         items.clear()
+
+    def _set_labels_and_descriptions(self, item: dict, row: pd.Series, language: str) -> None:
+        if (label_value := row.get("__label")) is not None:
+            item["labels"][language] = {
+                "language": language, 
+                "value": str(label_value)
+            }
+        if (description_value := row.get("__description")) is not None:
+            item["descriptions"][language] = {
+                "language": language,
+                "value": str(description_value)
+            }
 
 
 class CreateItemsStep(BatchMixin):
@@ -62,21 +74,14 @@ class CreateItemsStep(BatchMixin):
 
         items: list[dict] = []
         for _, row in dataframe.iterrows():
-            item_label = str(row.get("__label", ""))
-            labels = label(context.language, item_label)
-
-            descriptions = {}
-            description_value = row.get("__description") if "__description" in row else None
-            if pd.notna(description_value):
-                descriptions = description(context.language, str(description_value))
-
             item = entity(
-                labels=labels,
+                labels={},
                 aliases={},
-                descriptions=descriptions,
+                descriptions={},
                 claims={},
                 etype="item",
             )
+            self._set_labels_and_descriptions(item, row, context.language)
 
             self.claim_builder.apply_statements(
                 item,
@@ -112,31 +117,6 @@ class UpdateStrategy(BatchMixin, ABC):
     ) -> None:
         raise NotImplementedError
 
-    def _prepare_row_contexts(
-        self,
-        dataframe: pd.DataFrame,
-        mapping_rule: MappingRule,
-    ) -> list["UpdateStrategy.RowContext"]:
-        if dataframe.empty:
-            return []
-
-        contexts: list[UpdateStrategy.RowContext] = []
-        for _, row in dataframe.iterrows():
-            label_value = str(row.get("__label", ""))
-            unique_value = row.get("__unique_key_value")
-            description_value = row.get("__description") if "__description" in row else None
-            qid = row.get("__qid")
-            contexts.append(
-                UpdateStrategy.RowContext(
-                    row=row,
-                    label=label_value,
-                    unique_value=unique_value,
-                    description_value=description_value,
-                    qid=qid,
-                )
-            )
-        return contexts
-
     def _build_unique_key_statement(self, mapping_rule: MappingRule) -> StatementDefinition | None:
         uk = mapping_rule.item.unique_key
         if not uk:
@@ -152,19 +132,6 @@ class UpdateStrategy(BatchMixin, ABC):
             statements.append(extra)
         return statements
 
-    @staticmethod
-    def _normalize_qid(qid: Any | None) -> str | None:
-        if qid is None or pd.isna(qid):
-            return None
-        qid_str = str(qid).strip()
-        if not qid_str:
-            return None
-        if not qid_str.upper().startswith("Q"):
-            return f"Q{qid_str}"
-        if qid_str.startswith("q"):
-            return f"Q{qid_str[1:]}"
-        return qid_str
-
 
 class ReplaceAllStrategy(UpdateStrategy):
     """Replace the full set of claims for existing items."""
@@ -178,30 +145,21 @@ class ReplaceAllStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
+        with ItemBulkSearcher() as item_searcher:
+            items_by_qid = item_searcher.find_items_by_qids(
+                dataframe["__qid"].tolist(),
+                language=context.language,
+            )
+
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
         for _, row in dataframe.iterrows():
-            qid = self._normalize_qid(row.get("__qid"))
-            if not qid:
-                continue
+            qid = row.get("__qid")
+            item: dict = items_by_qid.pop(qid)
+            
+            self._set_labels_and_descriptions(item, row, context.language)
 
-            label_value = str(row.get("__label", ""))
-            labels = label(context.language, label_value)
-            description_value = row.get("__description") if "__description" in row else None
-            descriptions = (
-                description(context.language, str(description_value))
-                if description_value not in (None, "")
-                else {}
-            )
-
-            item = entity(
-                labels=labels,
-                aliases={},
-                descriptions=descriptions,
-                claims={},
-                etype="item",
-            )
-            item["id"] = qid
+            item["claims"] = {}
 
             self.claim_builder.apply_statements(item, row, statements, context)
             items.append(item)
@@ -221,48 +179,23 @@ class AppendOrReplaceStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        contexts = self._prepare_row_contexts(dataframe, mapping_rule)
-        if not contexts:
-            return
-
-        qids = [
-            qid
-            for qid in (
-                self._normalize_qid(ctx.qid) for ctx in contexts
-            )
-            if qid
-        ]
-        if not qids:
-            return
-
         with ItemBulkSearcher() as item_searcher:
             items_by_qid = item_searcher.find_items_by_qids(
-                qids,
+                dataframe["__qid"].tolist(),
                 language=context.language,
             )
 
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
-        for row_ctx in contexts:
-            qid = self._normalize_qid(row_ctx.qid)
-            if not qid:
-                continue
-
-            existing_item = items_by_qid.get(qid)
-            if not existing_item:
-                continue
-
-            existing_item = copy.deepcopy(existing_item)
-            existing_item["labels"] = label(context.language, row_ctx.label)
-
-            if row_ctx.description_value not in (None, ""):
-                existing_item["descriptions"] = description(
-                    context.language, str(row_ctx.description_value)
-                )
+        for _, row in dataframe.iterrows():
+            qid = row.get("__qid")
+            existing_item: dict = items_by_qid.pop(qid)
+            
+            self._set_labels_and_descriptions(existing_item, row, context.language)
 
             for statement in statements:
                 new_claim_dict = self.claim_builder.build_claim(
-                    statement, row_ctx.row, context
+                    statement, row, context
                 )
                 if not new_claim_dict:
                     continue
@@ -307,48 +240,23 @@ class ForceAppendStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        contexts = self._prepare_row_contexts(dataframe, mapping_rule)
-        if not contexts:
-            return
-
-        qids = [
-            qid
-            for qid in (
-                self._normalize_qid(ctx.qid) for ctx in contexts
-            )
-            if qid
-        ]
-        if not qids:
-            return
-
         with ItemBulkSearcher() as item_searcher:
             items_by_qid = item_searcher.find_items_by_qids(
-                qids,
+                dataframe["__qid"].tolist(),
                 language=context.language,
             )
 
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
-        for row_ctx in contexts:
-            qid = self._normalize_qid(row_ctx.qid)
-            if not qid:
-                continue
-
-            existing_item = items_by_qid.get(qid)
-            if not existing_item:
-                continue
-
-            existing_item = copy.deepcopy(existing_item)
-            existing_item["labels"] = label(context.language, row_ctx.label)
-
-            if row_ctx.description_value not in (None, ""):
-                existing_item["descriptions"] = description(
-                    context.language, str(row_ctx.description_value)
-                )
+        for _, row in dataframe.iterrows():
+            qid = row.get("__qid")
+            existing_item: dict = items_by_qid.pop(qid)
+            
+            self._set_labels_and_descriptions(existing_item, row, context.language)
 
             for statement in statements:
                 new_claim_dict = self.claim_builder.build_claim(
-                    statement, row_ctx.row, context
+                    statement, row, context
                 )
                 if not new_claim_dict:
                     continue
@@ -379,23 +287,9 @@ class KeepStrategy(UpdateStrategy):
         if dataframe.empty or not mapping_rule.statements:
             return
 
-        contexts = self._prepare_row_contexts(dataframe, mapping_rule)
-        if not contexts:
-            return
-
-        qids = [
-            qid
-            for qid in (
-                self._normalize_qid(ctx.qid) for ctx in contexts
-            )
-            if qid
-        ]
-        if not qids:
-            return
-
         with ItemBulkSearcher() as item_searcher:
             items_by_qid = item_searcher.find_items_by_qids(
-                qids,
+                dataframe["__qid"].tolist(),
                 language=context.language,
             )
 
@@ -404,50 +298,35 @@ class KeepStrategy(UpdateStrategy):
         kept_claims = 0
         appended_claims = 0
 
-        for row_ctx in contexts:
-            qid = self._normalize_qid(row_ctx.qid)
-            if not qid:
-                continue
+        for _, row in dataframe.iterrows():
+            qid = row.get("__qid")
+            existing_item: dict = items_by_qid.pop(qid)
+            
+            self._set_labels_and_descriptions(existing_item, row, context.language)
 
-            existing_item = items_by_qid.get(qid)
-            if not existing_item or not existing_item.get("id"):
-                continue
-
-            current_claims = existing_item.get("claims") or {}
-            modified_item = None
+            # Ensure claims dict exists and get reference for modifications
+            current_claims = existing_item.setdefault("claims", {})
 
             for statement in statements:
                 property_id_stmt, _ = context.get_property_info(statement.property)
                 if not property_id_stmt:
                     continue
 
-                if property_id_stmt in current_claims:
+                # Check if property exists AND has claims
+                if current_claims.get(property_id_stmt):
                     kept_claims += 1
                     continue
 
                 new_claim_dict = self.claim_builder.build_claim(
-                    statement, row_ctx.row, context
+                    statement, row, context
                 )
                 if not new_claim_dict:
                     continue
 
-                if modified_item is None:
-                    modified_item = copy.deepcopy(existing_item)
-                    modified_item["labels"] = label(
-                        context.language, row_ctx.label
-                    )
-                    if row_ctx.description_value not in (None, ""):
-                        modified_item["descriptions"] = description(
-                            context.language, str(row_ctx.description_value)
-                        )
-                    modified_item.setdefault("claims", current_claims)
-                    current_claims = modified_item["claims"]
-
                 current_claims[property_id_stmt] = new_claim_dict[property_id_stmt]
                 appended_claims += 1
 
-            if modified_item:
-                items.append(modified_item)
+            items.append(existing_item)
 
         self._flush_items(items, new=False)
 
@@ -458,7 +337,148 @@ class KeepStrategy(UpdateStrategy):
 
 
 class MergeRefsOrAppendStrategy(UpdateStrategy):
-    """Placeholder for future implementation."""
+    """Merge references if claim exists, otherwise append.
+    
+    This strategy is useful when aggregating data from multiple sources.
+    It will:
+    1. Find existing claims with matching mainsnak value and qualifiers
+    2. Merge new references into existing claims if they don't already exist
+    3. Append new claims if no matching claim is found
+    
+    Example:
+        Existing claim: Population=50000 (date=2020-01-01, ref=Q456)
+        New data: Population=50000 (date=2020-01-01, ref=Q789)
+        Result: Same claim with both references (Q456, Q789)
+        
+        New data: Population=52000 (date=2021-01-01, ref=Q456)
+        Result: New claim appended (different value/qualifiers)
+    """
+
+    def _mainsnak_values_equal(self, claim1: dict, claim2: dict) -> bool:
+        """Check if mainsnak datavalues are equal."""
+        mainsnak1 = claim1.get("mainsnak", {})
+        mainsnak2 = claim2.get("mainsnak", {})
+        
+        datavalue1 = mainsnak1.get("datavalue", {})
+        datavalue2 = mainsnak2.get("datavalue", {})
+        
+        return datavalue1.get("value") == datavalue2.get("value")
+
+    def _qualifiers_equal(self, claim1: dict, claim2: dict) -> bool:
+        """Check if qualifiers are equal between two claims."""
+        qualifiers1 = claim1.get("qualifiers", {})
+        qualifiers2 = claim2.get("qualifiers", {})
+        
+        # Compare qualifiers-order
+        order1 = claim1.get("qualifiers-order", [])
+        order2 = claim2.get("qualifiers-order", [])
+        if set(order1) != set(order2):
+            return False
+        
+        # Compare qualifiers for each property
+        for prop in order1:
+            quals1 = qualifiers1.get(prop, [])
+            quals2 = qualifiers2.get(prop, [])
+            
+            if len(quals1) != len(quals2):
+                return False
+            
+            # Compare each qualifier snak
+            for q1, q2 in zip(quals1, quals2):
+                if not is_same_snak(q1, q2):
+                    return False
+        
+        return True
+
+    def _ref_present(self, new_claim: dict, existing_claim: dict) -> bool:
+        """Check if the new claim's reference block is present in existing claim."""
+        new_refs = new_claim.get("references", [])
+        existing_refs = existing_claim.get("references", [])
+        
+        if not new_refs:
+            return True  # No references to check
+        
+        for new_ref in new_refs:
+            new_snaks = new_ref.get("snaks", {})
+            new_snaks_order = new_ref.get("snaks-order", [])
+            
+            # Check if this reference block exists in existing references
+            for existing_ref in existing_refs:
+                existing_snaks = existing_ref.get("snaks", {})
+                existing_snaks_order = existing_ref.get("snaks-order", [])
+                
+                # Check if snaks-order matches
+                if set(new_snaks_order) != set(existing_snaks_order):
+                    continue
+                
+                # Check if all snaks match
+                all_match = True
+                for prop in new_snaks_order:
+                    new_prop_snaks = new_snaks.get(prop, [])
+                    existing_prop_snaks = existing_snaks.get(prop, [])
+                    
+                    if len(new_prop_snaks) != len(existing_prop_snaks):
+                        all_match = False
+                        break
+                    
+                    for ns, es in zip(new_prop_snaks, existing_prop_snaks):
+                        if not is_same_snak(ns, es):
+                            all_match = False
+                            break
+                    
+                    if not all_match:
+                        break
+                
+                if all_match:
+                    return True
+        
+        return False
+
+    def _merge_references(self, existing_claim: dict, new_claim: dict) -> None:
+        """Merge references from new_claim into existing_claim if not present."""
+        new_refs = new_claim.get("references", [])
+        existing_refs = existing_claim.get("references", [])
+        
+        if not new_refs:
+            return
+        
+        for new_ref in new_refs:
+            new_snaks = new_ref.get("snaks", {})
+            new_snaks_order = new_ref.get("snaks-order", [])
+            
+            # Check if this reference already exists
+            ref_exists = False
+            for existing_ref in existing_refs:
+                existing_snaks = existing_ref.get("snaks", {})
+                existing_snaks_order = existing_ref.get("snaks-order", [])
+                
+                if set(new_snaks_order) != set(existing_snaks_order):
+                    continue
+                
+                all_match = True
+                for prop in new_snaks_order:
+                    new_prop_snaks = new_snaks.get(prop, [])
+                    existing_prop_snaks = existing_snaks.get(prop, [])
+                    
+                    if len(new_prop_snaks) != len(existing_prop_snaks):
+                        all_match = False
+                        break
+                    
+                    for ns, es in zip(new_prop_snaks, existing_prop_snaks):
+                        if not is_same_snak(ns, es):
+                            all_match = False
+                            break
+                    
+                    if not all_match:
+                        break
+                
+                if all_match:
+                    ref_exists = True
+                    break
+            
+            # If reference doesn't exist, add it
+            if not ref_exists:
+                existing_refs.append(new_ref)
 
     def run(
         self,
@@ -466,7 +486,330 @@ class MergeRefsOrAppendStrategy(UpdateStrategy):
         mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
-        raise NotImplementedError("MERGE_REFS_OR_APPEND strategy not implemented yet.")
+        if dataframe.empty:
+            return
+
+        with ItemBulkSearcher() as item_searcher:
+            items_by_qid = item_searcher.find_items_by_qids(
+                dataframe["__qid"].tolist(),
+                language=context.language,
+            )
+
+        statements = self._statements_with_unique_key(mapping_rule)
+        items: list[dict] = []
+        
+        for _, row in dataframe.iterrows():
+            qid = row.get("__qid")
+            existing_item: dict = items_by_qid.pop(qid)
+            
+            self._set_labels_and_descriptions(existing_item, row, context.language)
+
+            for statement in statements:
+                new_claim_dict = self.claim_builder.build_claim(
+                    statement, row, context
+                )
+                if not new_claim_dict:
+                    continue
+
+                property_id_stmt, _ = context.get_property_info(statement.property)
+                if not property_id_stmt:
+                    continue
+
+                new_claim = new_claim_dict[property_id_stmt][0]
+
+                claims = existing_item.setdefault("claims", {})
+                if property_id_stmt in claims:
+                    existing_claims = claims[property_id_stmt]
+                    claim_found = False
+                    
+                    for existing_claim in existing_claims:
+                        # Check if mainsnak values match
+                        if not self._mainsnak_values_equal(new_claim, existing_claim):
+                            continue
+                        
+                        # Check if qualifiers match
+                        if not self._qualifiers_equal(new_claim, existing_claim):
+                            continue
+                        
+                        # Claim with same value and qualifiers found
+                        claim_found = True
+                        
+                        # Check if references are already present
+                        if not self._ref_present(new_claim, existing_claim):
+                            # Merge references into existing claim
+                            self._merge_references(existing_claim, new_claim)
+                        
+                        # Keep existing claim (don't replace it)
+                        break
+
+                    # If claim doesn't exist, append it
+                    if not claim_found:
+                        existing_claims.append(new_claim)
+                else:
+                    claims[property_id_stmt] = [new_claim]
+
+            items.append(existing_item)
+
+        self._flush_items(items, new=False)
+
+
+class MergeQualifiersStrategy(UpdateStrategy):
+    """Merge qualifiers if claim exists with same value, otherwise append.
+    
+    This strategy merges qualifier values when claims have the same property
+    and mainsnak value, even if qualifiers differ. It will:
+    1. Find existing claims with matching mainsnak value
+    2. Merge new qualifier values into existing claims (deduplicating)
+    3. Merge references if they don't already exist
+    4. Append new claims if no matching claim is found
+    
+    Example:
+        Existing claim: 
+            property="personas matrículadas", value=7
+            qualifiers: año=2020, identificador género=mujer
+        
+        New data: 
+            property="personas matrículadas", value=7
+            qualifiers: año=2021, identificador género=mujer
+        
+        Result: Same claim with merged qualifiers:
+            qualifiers: año=2020,2021, identificador género=mujer
+    """
+
+    def _mainsnak_values_equal(self, claim1: dict, claim2: dict) -> bool:
+        """Check if mainsnak datavalues are equal."""
+        mainsnak1 = claim1.get("mainsnak", {})
+        mainsnak2 = claim2.get("mainsnak", {})
+        
+        datavalue1 = mainsnak1.get("datavalue", {})
+        datavalue2 = mainsnak2.get("datavalue", {})
+        
+        return datavalue1.get("value") == datavalue2.get("value")
+
+    def _qualifier_snak_exists(
+        self, qualifier_snak: dict, qualifiers_list: list[dict]
+    ) -> bool:
+        """Check if a qualifier snak already exists in a list."""
+        return any(is_same_snak(qualifier_snak, existing) 
+                   for existing in qualifiers_list)
+
+    def _merge_qualifiers(
+        self, existing_claim: dict, new_claim: dict
+    ) -> None:
+        """Merge qualifiers from new_claim into existing_claim.
+        
+        This method merges qualifier values by adding new qualifier snaks
+        to existing lists, preserving all existing qualifiers. It does NOT
+        replace any existing qualifiers.
+        """
+        new_qualifiers = new_claim.get("qualifiers", {})
+        if not new_qualifiers:
+            return
+        
+        # Ensure existing_claim has qualifiers structure
+        if "qualifiers" not in existing_claim:
+            existing_claim["qualifiers"] = {}
+        existing_qualifiers = existing_claim["qualifiers"]
+        
+        if "qualifiers-order" not in existing_claim:
+            existing_claim["qualifiers-order"] = []
+        existing_order = existing_claim["qualifiers-order"]
+        
+        new_order = new_claim.get("qualifiers-order", [])
+        
+        # Merge qualifiers for each property in the new claim
+        for prop in new_order:
+            new_prop_qualifiers = new_qualifiers.get(prop, [])
+            if not new_prop_qualifiers:
+                continue
+            
+            # Get the existing list for this qualifier property, or create new
+            if prop in existing_qualifiers:
+                # Use existing list - we'll append to it
+                existing_prop_qualifiers = existing_qualifiers[prop]
+            else:
+                # Create new list for this property
+                existing_prop_qualifiers = []
+                existing_qualifiers[prop] = existing_prop_qualifiers
+            
+            # Add qualifiers that don't already exist (preserve existing)
+            for new_qual in new_prop_qualifiers:
+                if not self._qualifier_snak_exists(
+                    new_qual, existing_prop_qualifiers
+                ):
+                    existing_prop_qualifiers.append(new_qual)
+            
+            # Ensure property is in qualifiers-order
+            if prop not in existing_order:
+                existing_order.append(prop)
+
+    def _ref_present(self, new_claim: dict, existing_claim: dict) -> bool:
+        """Check if the new claim's reference block is present."""
+        new_refs = new_claim.get("references", [])
+        existing_refs = existing_claim.get("references", [])
+        
+        if not new_refs:
+            return True  # No references to check
+        
+        for new_ref in new_refs:
+            new_snaks = new_ref.get("snaks", {})
+            new_snaks_order = new_ref.get("snaks-order", [])
+            
+            # Check if this reference block exists
+            for existing_ref in existing_refs:
+                existing_snaks = existing_ref.get("snaks", {})
+                existing_snaks_order = existing_ref.get("snaks-order", [])
+                
+                # Check if snaks-order matches
+                if set(new_snaks_order) != set(existing_snaks_order):
+                    continue
+                
+                # Check if all snaks match
+                all_match = True
+                for prop in new_snaks_order:
+                    new_prop_snaks = new_snaks.get(prop, [])
+                    existing_prop_snaks = existing_snaks.get(prop, [])
+                    
+                    if len(new_prop_snaks) != len(existing_prop_snaks):
+                        all_match = False
+                        break
+                    
+                    for ns, es in zip(new_prop_snaks, existing_prop_snaks):
+                        if not is_same_snak(ns, es):
+                            all_match = False
+                            break
+                    
+                    if not all_match:
+                        break
+                
+                if all_match:
+                    return True
+        
+        return False
+
+    def _merge_references(
+        self, existing_claim: dict, new_claim: dict
+    ) -> None:
+        """Merge references from new_claim into existing_claim if not present."""
+        new_refs = new_claim.get("references", [])
+        existing_refs = existing_claim.setdefault("references", [])
+        
+        if not new_refs:
+            return
+        
+        for new_ref in new_refs:
+            new_snaks = new_ref.get("snaks", {})
+            new_snaks_order = new_ref.get("snaks-order", [])
+            
+            # Check if this reference already exists
+            ref_exists = False
+            for existing_ref in existing_refs:
+                existing_snaks = existing_ref.get("snaks", {})
+                existing_snaks_order = existing_ref.get("snaks-order", [])
+                
+                if set(new_snaks_order) != set(existing_snaks_order):
+                    continue
+                
+                all_match = True
+                for prop in new_snaks_order:
+                    new_prop_snaks = new_snaks.get(prop, [])
+                    existing_prop_snaks = existing_snaks.get(prop, [])
+                    
+                    if len(new_prop_snaks) != len(existing_prop_snaks):
+                        all_match = False
+                        break
+                    
+                    for ns, es in zip(new_prop_snaks, existing_prop_snaks):
+                        if not is_same_snak(ns, es):
+                            all_match = False
+                            break
+                    
+                    if not all_match:
+                        break
+                
+                if all_match:
+                    ref_exists = True
+                    break
+            
+            # If reference doesn't exist, add it
+            if not ref_exists:
+                existing_refs.append(new_ref)
+
+    def run(
+        self,
+        dataframe: pd.DataFrame,
+        mapping_rule: MappingRule,
+        context: MappingContext,
+    ) -> None:
+        if dataframe.empty:
+            return
+
+        with ItemBulkSearcher() as item_searcher:
+            items_by_qid = item_searcher.find_items_by_qids(
+                dataframe["__qid"].tolist(),
+                language=context.language,
+            )
+
+        statements = self._statements_with_unique_key(mapping_rule)
+        items: list[dict] = []
+        
+        for _, row in dataframe.iterrows():
+            qid = row.get("__qid")
+            existing_item: dict = items_by_qid.pop(qid)
+            
+            self._set_labels_and_descriptions(
+                existing_item, row, context.language
+            )
+
+            for statement in statements:
+                new_claim_dict = self.claim_builder.build_claim(
+                    statement, row, context
+                )
+                if not new_claim_dict:
+                    continue
+
+                property_id_stmt, _ = context.get_property_info(
+                    statement.property
+                )
+                if not property_id_stmt:
+                    continue
+
+                new_claim = new_claim_dict[property_id_stmt][0]
+
+                claims = existing_item.setdefault("claims", {})
+                if property_id_stmt in claims:
+                    existing_claims = claims[property_id_stmt]
+                    claim_found = False
+                    
+                    for existing_claim in existing_claims:
+                        # Check if mainsnak values match
+                        if not self._mainsnak_values_equal(
+                            new_claim, existing_claim
+                        ):
+                            continue
+                        
+                        # Claim with same value found - merge qualifiers
+                        claim_found = True
+                        
+                        # Merge qualifiers from new claim
+                        self._merge_qualifiers(existing_claim, new_claim)
+                        
+                        # Merge references if not already present
+                        if not self._ref_present(new_claim, existing_claim):
+                            self._merge_references(existing_claim, new_claim)
+                        
+                        # Keep existing claim (don't replace it)
+                        break
+
+                    # If claim doesn't exist, append it
+                    if not claim_found:
+                        existing_claims.append(new_claim)
+                else:
+                    claims[property_id_stmt] = [new_claim]
+
+            items.append(existing_item)
+
+        self._flush_items(items, new=False)
 
 
 class UpdateStrategyFactory:
@@ -481,6 +824,7 @@ class UpdateStrategyFactory:
         UpdateAction.FORCE_APPEND: ForceAppendStrategy,
         UpdateAction.KEEP: KeepStrategy,
         UpdateAction.MERGE_REFS_OR_APPEND: MergeRefsOrAppendStrategy,
+        UpdateAction.MERGE_QUALIFIERS_OR_APPEND: MergeQualifiersStrategy,
     }
 
     @classmethod
