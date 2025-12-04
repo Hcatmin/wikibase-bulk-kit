@@ -8,7 +8,7 @@ from typing import Iterable, Tuple, Dict, Any
 from RaiseWikibase.dbconnection import DBConnection
 from wbk.processor.bulk_item_search import ItemBulkSearcher
 
-from ..models import StatementDefinition, UniqueKey, ValueDefinition
+from ..models import StatementDefinition, ValueDefinition, MappingRule
 
 
 def _iter_claims(schema: list[StatementDefinition] | None):
@@ -31,13 +31,12 @@ class MappingContext:
         self.qid_cache_unique: dict[tuple[str, str, str], str] = {}
         self.db_connection = DBConnection()
 
-    def ensure_properties(
-        self,
-        statements: list[StatementDefinition] | None = None,
-        unique_keys: Iterable[UniqueKey] | None = None,
-    ) -> None:
+    def ensure_properties(self, mapping: MappingRule) -> None:
         """Populate the property cache (id + datatype) using labels found in statements and unique keys."""
         labels: set[str] = set()
+
+        statements = mapping.statements
+        unique_keys = [mapping.item.unique_key] if mapping.item.unique_key else None
 
         def _collect_unique_key_from_value(value_spec: Any):
             """Recursively collect property labels from ValueDefinition.unique_key."""

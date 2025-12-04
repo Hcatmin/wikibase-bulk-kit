@@ -21,7 +21,7 @@ class UniqueKey(BaseModel):
     value: str = Field(..., description="Value template for the unique key (e.g. '{column}')")
 
 class ItemDefinition(BaseModel):
-    label: str = Field(..., description="Label template")
+    label: str | None = None
     unique_key: UniqueKey | None = None
     description: str | None = None
 
@@ -56,4 +56,5 @@ class MappingConfig(BaseModel):
     encoding: str = "utf-8"
     delimiter: str = ","
     decimal_separator: str = "."
+    chunk_size: int | None = None
     csv_files: List[CSVFileConfig]

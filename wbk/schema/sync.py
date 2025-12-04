@@ -12,7 +12,7 @@ import sys
 from ..config.manager import ConfigManager
 from .models import SchemaConfig, ItemSchema, PropertySchema
 from wbk.backend.interface import BackendStrategy
-from ..backend.api import ApiBackend
+from wbk.backend.api import ApiBackend
 
 console = Console(force_terminal=True, width=120)
 stderr_console = Console(file=sys.stderr, force_terminal=True, width=120)

@@ -27,15 +27,23 @@ from wbk.processor.bulk_item_search import ItemBulkSearcher
 class MappingProcessor:
     """Processes mapping configurations using the new pipeline architecture."""
 
-    def __init__(self, config_manager: ConfigManager, chunk_size: int = 1000) -> None:
+    def __init__(self, config_manager: ConfigManager) -> None:
         self.config_manager = config_manager
-        self.chunk_size = chunk_size
+        self._chunk_size = 1000
         self.value_resolver = ValueResolver()
         self.claim_builder = ClaimBuilder(self.value_resolver)
         self.creator = CreateItemsStep(
             claim_builder=self.claim_builder,
         )
         self.updater: UpdateStrategy | None = None
+
+    @property
+    def chunk_size(self) -> int:
+        return self._chunk_size
+
+    @chunk_size.setter
+    def chunk_size(self, value: int) -> None:
+        self._chunk_size = value
 
     def _load_mapping_config(self, mapping_path: str) -> MappingConfig:
         mapping_file = Path(mapping_path)
@@ -254,10 +262,7 @@ class MappingProcessor:
             return
 
         # Prime property cache (ids + datatypes)
-        context.ensure_properties(
-            statements=mapping.statements,
-            unique_keys=[mapping.item.unique_key] if mapping.item.unique_key else None,
-        )
+        context.ensure_properties(mapping)
 
         # Prime wikibase-item value caches for statements
         if mapping.statements:
@@ -282,13 +287,19 @@ class MappingProcessor:
             raise ValueError(f"Unique key property not found: {uk.property}")
 
         total_rows = len(prepared_df)
-        for start in range(0, total_rows, self.chunk_size):
-            chunk = prepared_df.iloc[start : start + self.chunk_size]
+        while not prepared_df.empty:
+            # Pop chunk from the beginning to free memory
+            chunk_size = min(self.chunk_size, len(prepared_df))
+            chunk = prepared_df.iloc[:chunk_size].copy()
+            prepared_df = prepared_df.iloc[chunk_size:].reset_index(drop=True)
+
             if chunk.empty:
                 continue
 
             keys = list(
-                chunk[["__label", "__unique_key_value"]].itertuples(index=False, name=None)
+                chunk[["__label", "__unique_key_value"]].itertuples(
+                    index=False, name=None
+                )
             )
 
             context.ensure_qids_for_unique_keys(keys, uk_property_id, uk_datatype)
@@ -326,18 +337,24 @@ class MappingProcessor:
                     .loc[lambda x: x["_merge"] == "left_only"]
                     .drop(columns=["_merge"])
                 )
+                del found_df
             else:
                 df_existing = chunk.iloc[0:0]
-                df_new = chunk
+                df_new = chunk.copy()  # Create copy so 
+            del chunk
 
             if not df_new.empty:
                 self.creator.run(df_new, mapping, context)
+                del df_new
 
             if self.updater and not df_existing.empty:
                 self.updater.run(df_existing, mapping, context)
+                del df_existing
 
     def process(self, mapping_path: str) -> None:
         mapping_config = self._load_mapping_config(mapping_path)
+        if mapping_config.chunk_size:
+            self.chunk_size = mapping_config.chunk_size
         context = MappingContext(language=mapping_config.language)
 
         for csv_config in mapping_config.csv_files:
