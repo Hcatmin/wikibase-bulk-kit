@@ -49,7 +49,7 @@ class ApiBackend(BackendStrategy):
         
 
     def find_property_by_label(self, label: str) -> Optional[str]:
-        properties = wbi_helpers.search_entities(search_string=label, search_type='property', dict_result=False)
+        properties = wbi_helpers.search_entities(search_string=label, search_type='property', dict_result=True)
 
         for prop in properties:
             prop_id = prop.get('id', 'Unknown')
@@ -150,7 +150,7 @@ class ApiBackend(BackendStrategy):
             prop.labels.set(value=property_schema.label)
             prop.descriptions.set(value=property_schema.description)
             
-            prop.aliases.set(values=property_schema.aliases, action=ActionIfExists.REPLACE_ALL)
+            prop.aliases.set(values=property_schema.aliases, action_if_exists=ActionIfExists.REPLACE_ALL)
             
             prop.write(login=self.wbi.login)
 
@@ -195,7 +195,7 @@ class ApiBackend(BackendStrategy):
             item.labels.set(value=item_schema.label)
             item.descriptions.set(value=item_schema.description)
             
-            item.aliases.set(values=item_schema.aliases, action=ActionIfExists.REPLACE_ALL)
+            item.aliases.set(values=item_schema.aliases, action_if_exists=ActionIfExists.REPLACE_ALL)
             
             if item_schema.statements:
                 claims_to_add = self._create_claims_from_statements(item_schema.statements)
