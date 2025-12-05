@@ -3,6 +3,9 @@ import sys
 from typing import Optional, List, Any
 from rich.console import Console
 
+from wikibaseintegrator import WikibaseIntegrator
+from wikibaseintegrator.wbi_config import config as wbi_config
+from wikibaseintegrator.wbi_login import Login
 from wikibaseintegrator import wbi_helpers
 from wikibaseintegrator.wbi_enums import ActionIfExists
 from wikibaseintegrator.models import Qualifiers, References
@@ -14,29 +17,45 @@ from ..config.manager import ConfigManager
 from ..schema.models import PropertySchema, ItemSchema, StatementSchema, ClaimSchema
 from .interface import BackendStrategy
 
+from wbk.config.settings import settings
+
 console = Console(force_terminal=True, width=120)
 stderr_console = Console(file=sys.stderr, force_terminal=True, width=120)
 
 class ApiBackend(BackendStrategy):
     """Backend strategy using WikibaseIntegrator API."""
 
-    def __init__(self, config_manager: ConfigManager, language: str = 'es') -> None:
+    def __init__(self, language: str) -> None:
         super().__init__(language=language)
-        self.config_manager = config_manager
-        self.wbi = config_manager.get_wikibase_integrator()
+        self.wbi = self._get_wikibase_integrator()
         # Cache for items by label and description to avoid repeated lookups
         self.items_by_label_and_description: dict[str, dict[str, str]] = {}
         # Cache for properties by label
         self.properties_by_label: dict[str, str] = {}
 
+    def _get_wikibase_integrator(self) -> WikibaseIntegrator:
+        """Get configured Wikibase Integrator instance.
+        
+        Returns:
+            Configured WikibaseIntegrator instance
+        """
+        wbi_config['MEDIAWIKI_API_URL'] = settings.mediawiki_api_url
+        wbi_config['WIKIBASE_URL'] = settings.wikibase_url
+        wbi_config['DEFAULT_LANGUAGE'] = self.language
+        
+        username = settings.wikibase_username
+        password = settings.wikibase_password
+        return WikibaseIntegrator(login=Login(user=username, password=password))
+        
+
     def find_property_by_label(self, label: str) -> Optional[str]:
-        properties = wbi_helpers.search_entities(label, language=self.language, search_type='property', dict_result=True)
+        properties = wbi_helpers.search_entities(search_string=label, search_type='property', dict_result=False)
 
         for prop in properties:
             prop_id = prop.get('id', 'Unknown')
             try:
                 full_prop = self.wbi.property.get(entity_id=prop_id)
-                prop_label = full_prop.labels.get(self.language)
+                prop_label = full_prop.labels.get()
                 
                 if prop_label and prop_label.value == label:
                     return prop_id
@@ -46,7 +65,7 @@ class ApiBackend(BackendStrategy):
         return None
 
     def find_item_by_label(self, label: str) -> Optional[str]:
-        response = wbi_helpers.search_entities(label, language=self.language, search_type='item', dict_result=True)
+        response = wbi_helpers.search_entities(search_string=label, search_type='item', dict_result=True)
 
         if len(response) == 0:
             raise ValueError(f"No item found for label '{label}'")
@@ -56,14 +75,14 @@ class ApiBackend(BackendStrategy):
             return response[0].get('id')
 
     def find_item_by_label_and_description(self, label: str, description: str) -> Optional[str]:
-        items = wbi_helpers.search_entities(label, language=self.language, search_type='item', dict_result=True)
+        items = wbi_helpers.search_entities(search_string=label, search_type='item', dict_result=True)
         
         for item in items:
             item_id = item.get('id')
             try:
                 full_item = self.wbi.item.get(entity_id=item_id)
-                item_label = full_item.labels.get(self.language)
-                item_description = full_item.descriptions.get(self.language)
+                item_label = full_item.labels.get()
+                item_description = full_item.descriptions.get()
         
                 if (item_label and item_label.value == label and 
                     item_description and item_description.value == description):
@@ -78,7 +97,7 @@ class ApiBackend(BackendStrategy):
             label = expression.split('(')[0].strip()
             key_word = expression.split('(')[1].split(')')[0].strip()
             
-            response = wbi_helpers.search_entities(label, language=self.language, search_type='item', dict_result=True)
+            response = wbi_helpers.search_entities(search_string=label, search_type='item', dict_result=True)
 
             if len(response) == 0:
                 raise ValueError(f"No item found for label '{label}'")
@@ -87,8 +106,8 @@ class ApiBackend(BackendStrategy):
                 for item in response:
                     item_id = item.get('id')
                     full_item = self.wbi.item.get(entity_id=item_id)
-                    item_label = full_item.labels.get(self.language)
-                    item_description = str(full_item.descriptions.get(self.language).value).lower()
+                    item_label = full_item.labels.get()
+                    item_description = str(full_item.descriptions.get().value).lower()
             
                     if (item_label and item_label.value == label and 
                         item_description and key_word in item_description):
@@ -106,12 +125,12 @@ class ApiBackend(BackendStrategy):
         try:
             prop = self.wbi.property.new()
             prop.datatype = property_schema.datatype
-            prop.labels.set(self.language, property_schema.label)
-            prop.descriptions.set(self.language, property_schema.description)
+            prop.labels.set(value=property_schema.label)
+            prop.descriptions.set(value=property_schema.description)
             
             if property_schema.aliases:
                 for alias in property_schema.aliases:
-                    prop.aliases.set(self.language, alias)
+                    prop.aliases.set(values=alias)
             
             prop.write(login=self.wbi.login)
             
@@ -128,10 +147,10 @@ class ApiBackend(BackendStrategy):
             prop = self.wbi.property.get(entity_id=property_schema.id)
 
             prop.datatype = property_schema.datatype
-            prop.labels.set(self.language, property_schema.label)
-            prop.descriptions.set(self.language, property_schema.description)
+            prop.labels.set(value=property_schema.label)
+            prop.descriptions.set(value=property_schema.description)
             
-            prop.aliases.set(self.language, property_schema.aliases, ActionIfExists.REPLACE_ALL)
+            prop.aliases.set(values=property_schema.aliases, action=ActionIfExists.REPLACE_ALL)
             
             prop.write(login=self.wbi.login)
 
@@ -143,12 +162,12 @@ class ApiBackend(BackendStrategy):
     def create_item(self, item_schema: ItemSchema) -> Optional[str]:
         try:
             item = self.wbi.item.new()
-            item.labels.set(self.language, item_schema.label)
-            item.descriptions.set(self.language, item_schema.description)
+            item.labels.set(value=item_schema.label)
+            item.descriptions.set(value=item_schema.description)
             
             if item_schema.aliases:
                 for alias in item_schema.aliases:
-                    item.aliases.set(self.language, alias)
+                    item.aliases.set(values=alias)
             
             if item_schema.statements:
                 claims_to_add = self._create_claims_from_statements(item_schema.statements)
@@ -173,10 +192,10 @@ class ApiBackend(BackendStrategy):
         try:
             item = self.wbi.item.get(entity_id=item_schema.id)
             
-            item.labels.set(self.language, item_schema.label)
-            item.descriptions.set(self.language, item_schema.description)
+            item.labels.set(value=item_schema.label)
+            item.descriptions.set(value=item_schema.description)
             
-            item.aliases.set(self.language, item_schema.aliases, ActionIfExists.REPLACE_ALL)
+            item.aliases.set(values=item_schema.aliases, action=ActionIfExists.REPLACE_ALL)
             
             if item_schema.statements:
                 claims_to_add = self._create_claims_from_statements(item_schema.statements)
@@ -263,7 +282,7 @@ class ApiBackend(BackendStrategy):
             case _:
                 return String(prop_nr=statement_id, value=str(statement.value))
 
-    def find_qids(self, keys: List[dict], language: str) -> dict:
+    def find_qids(self, keys: List[dict]) -> dict:
         # Fallback implementation using loops
         results = {}
         for i, key in enumerate(keys):
@@ -274,9 +293,9 @@ class ApiBackend(BackendStrategy):
                     results[i] = None
                 elif 'label' in key:
                     if 'description' in key and key['description']:
-                        results[i] = self.find_item_by_label_and_description(key['label'], key['description'], language)
+                        results[i] = self.find_item_by_label_and_description(key['label'], key['description'])
                     else:
-                        results[i] = self.find_item_by_label(key['label'], language)
+                        results[i] = self.find_item_by_label(key['label'])
             except Exception:
                 results[i] = None
         return results

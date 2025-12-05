@@ -9,7 +9,6 @@ from rich.text import Text
 from rich.table import Table
 import sys
 
-from ..config.manager import ConfigManager
 from .models import SchemaConfig, ItemSchema, PropertySchema
 from wbk.backend.interface import BackendStrategy
 from wbk.backend.api import ApiBackend
@@ -21,14 +20,12 @@ stderr_console = Console(file=sys.stderr, force_terminal=True, width=120)
 class SchemaSyncer:
     """Handles synchronization of properties and items to Wikibase."""
     
-    def __init__(self, config_manager: ConfigManager) -> None:
+    def __init__(self) -> None:
         """Initialize schema syncer.
         
         Args:
             config_manager: Configuration manager instance
         """
-        self.config_manager = config_manager
-        self.language: str = 'es'
         self.backend: BackendStrategy | None = None
 
     def sync(self, schema_path: str) -> None:
@@ -38,8 +35,7 @@ class SchemaSyncer:
             schema_path: Path to schema configuration file
         """
         schema_config = self._load_schema_config(schema_path)
-        self.language = schema_config.language
-        self.backend = ApiBackend(self.config_manager, self.language)
+        self.backend = ApiBackend(schema_config.language)
         
         stats = {
             "properties": {"created": 0, "updated": 0, "failed": 0},
