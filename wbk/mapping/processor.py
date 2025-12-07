@@ -6,7 +6,6 @@ from pathlib import Path
 import yaml
 import pandas as pd
 
-from ..config.manager import ConfigManager
 from wbk.mapping.models import (
     MappingRule,
     CSVFileConfig,
@@ -27,8 +26,7 @@ from wbk.processor.bulk_item_search import ItemBulkSearcher
 class MappingProcessor:
     """Processes mapping configurations using the new pipeline architecture."""
 
-    def __init__(self, config_manager: ConfigManager) -> None:
-        self.config_manager = config_manager
+    def __init__(self) -> None:
         self._chunk_size = 1000
         self.value_resolver = ValueResolver()
         self.claim_builder = ClaimBuilder(self.value_resolver)

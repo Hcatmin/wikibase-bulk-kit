@@ -203,6 +203,24 @@ properties:
     datatype: "quantity"
     aliases: ["coordenada de longitud"]
 
+  -
+    label: "código oficial de región"
+    description: "Código oficial de región"
+    datatype: "quantity"
+    aliases: ["código de región"]
+
+  -
+    label: "código oficial de comuna"
+    description: "Código oficial de comuna"
+    datatype: "quantity"
+    aliases: ["código de comuna"]
+
+  -
+    label: "rol base de datos del establecimiento"
+    description: "Rol base de datos del establecimiento"
+    datatype: "quantity"
+    aliases: ["rol de base de datos del establecimiento"]
+
 items:
   - label: "clase"
     description: "Instancia de una clase."

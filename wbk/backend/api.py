@@ -13,7 +13,6 @@ from wikibaseintegrator.datatypes import (
     String, ExternalID, Time, Quantity, Item, URL, CommonsMedia
 )
 
-from ..config.manager import ConfigManager
 from ..schema.models import PropertySchema, ItemSchema, StatementSchema, ClaimSchema
 from .interface import BackendStrategy
 
