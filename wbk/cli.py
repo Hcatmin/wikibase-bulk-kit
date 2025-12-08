@@ -7,6 +7,7 @@ import sys
 
 from wbk.mapping.processor import MappingProcessor
 from wbk.schema.sync import SchemaSyncer
+from RaiseWikibase.raiser import building_indexing, update_links
 
 console = Console()
 stderr_console = Console(file=sys.stderr)
@@ -65,7 +66,30 @@ def mapping(mapping_path: Path) -> None:
     except Exception as e:
         stderr_console.print(f"[red]✗ Mapping process failed: {e}[/red]")
         raise click.Abort()
-    
 
+
+@cli.command(name="indexing")
+def indexing() -> None:
+    """Build indexing tables for Wikibase."""
+    console.print("[blue]Building indexing tables for Wikibase...[/blue]")
+    try:
+        building_indexing()
+        console.print("[green]✓ Indexing tables built successfully![/green]")
+    except Exception as e:
+        stderr_console.print(f"[red]✗ Indexing tables build failed: {e}[/red]")
+        raise click.Abort()
+
+
+@cli.command(name="links")
+def links() -> None:
+    """Update links tables for Wikibase."""
+    console.print("[blue]Updating links tables for Wikibase...[/blue]")
+    try:
+        update_links()
+        console.print("[green]✓ Links tables updated successfully![/green]")
+    except Exception as e:
+        stderr_console.print(f"[red]✗ Links tables update failed: {e}[/red]")
+        raise click.Abort()
+        
 if __name__ == "__main__":
     cli()
