@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
@@ -122,6 +123,37 @@ class RaiseWikibaseBackend(BackendStrategy):
         if item_qid:
             empty_item["id"] = item_qid
         return empty_item
+
+    def _build_item_entity(
+        self,
+        qid: str,
+        item_json_text: Any,
+        language: str,
+        fallback_label: Optional[str] = None,
+    ) -> dict:
+        label_for_empty = fallback_label or qid
+        if item_json_text:
+            try:
+                if isinstance(item_json_text, bytes):
+                    item_json_text = item_json_text.decode("utf-8")
+                item_json = json.loads(item_json_text)
+                claims = item_json.get("claims", {}) or {}
+                labels_dict = item_json.get("labels", {}) or {}
+                descriptions_dict = item_json.get("descriptions", {}) or {}
+
+                item_entity = entity(
+                    labels=labels_dict,
+                    aliases={},
+                    descriptions=descriptions_dict,
+                    claims=claims,
+                    etype="item",
+                )
+                item_entity["id"] = qid
+                return item_entity
+            except Exception as exc:
+                print(f"Warning: Could not parse item JSON for {qid}: {exc}")
+
+        return self._create_empty_item(qid, label_for_empty, language)
 
     def find_property_by_label(self, label: str, language: str) -> Optional[str]:
         # Not implemented efficiently yet, fallback or TODO
@@ -489,29 +521,7 @@ class RaiseWikibaseBackend(BackendStrategy):
 
         for qid_text, item_json_text in results:
             qid = _decode_text(qid_text)
-            if item_json_text:
-                try:
-                    if isinstance(item_json_text, bytes):
-                        item_json_text = item_json_text.decode("utf-8")
-                    item_json = json.loads(item_json_text)
-                    claims = item_json.get("claims", {})
-                    labels_dict = item_json.get("labels", {})
-                    descriptions_dict = item_json.get("descriptions", {})
-
-                    item_entity = entity(
-                        labels=labels_dict if labels_dict else {},
-                        aliases={},
-                        descriptions=descriptions_dict if descriptions_dict else {},
-                        claims=claims if claims else {},
-                        etype="item",
-                    )
-                    item_entity["id"] = qid
-                    items_by_qid[qid] = item_entity
-                except (json.JSONDecodeError, Exception) as exc:
-                    print(f"Warning: Could not parse item JSON for {qid}: {exc}")
-                    items_by_qid[qid] = self._create_empty_item(qid, qid, language)
-            else:
-                items_by_qid[qid] = self._create_empty_item(qid, qid, language)
+            items_by_qid[qid] = self._build_item_entity(qid, item_json_text, language)
 
         return items_by_qid
 
@@ -630,6 +640,24 @@ class RaiseWikibaseBackend(BackendStrategy):
         property_datatype: Optional[str] = None,
         language: str = "en",
     ) -> Dict[Tuple[str, Optional[str]], Optional[str]]:
+        items = self.find_items_by_unique_key(
+            keys,
+            property_id=property_id,
+            property_datatype=property_datatype,
+            language=language,
+        )
+        return {
+            key: item.get("id") if item else None
+            for key, item in items.items()
+        }
+
+    def find_items_by_unique_key(
+        self,
+        keys: List[Tuple[str, Optional[str]]],
+        property_id: str,
+        property_datatype: Optional[str] = None,
+        language: str = "en",
+    ) -> Dict[Tuple[str, Optional[str]], Optional[dict]]:
         if not keys:
             return {}
 
@@ -649,29 +677,35 @@ class RaiseWikibaseBackend(BackendStrategy):
                 cursor, label_set, language=language
             )
 
-        results: Dict[Tuple[str, Optional[str]], Optional[str]] = {}
+        results: Dict[Tuple[str, Optional[str]], Optional[dict]] = {}
         lookup: Dict[str, List[str]] = {}
         for label, value in normalized_keys:
             lookup.setdefault(label, []).append(value)
 
         for label_text, item_qid, item_json_text in rows:
-            if not item_qid or not item_json_text:
+            if not item_qid:
                 continue
 
+            claim_values = []
             try:
-                if isinstance(item_json_text, bytes):
-                    item_json_text = item_json_text.decode("utf-8")
-                item_json = json.loads(item_json_text)
+                if item_json_text:
+                    claim_values = self._extract_claim_values(
+                        json.loads(item_json_text),
+                        property_id,
+                        property_datatype,
+                    )
             except Exception:
-                continue
-
-            claim_values = self._extract_claim_values(
-                item_json, property_id, property_datatype
-            )
+                claim_values = []
 
             expected_values = lookup.get(label_text, [])
             for expected in expected_values:
                 if expected in claim_values and (label_text, expected) not in results:
-                    results[(label_text, expected)] = item_qid
+                    item_entity = self._build_item_entity(
+                        item_qid,
+                        item_json_text,
+                        language,
+                        fallback_label=label_text,
+                    )
+                    results[(label_text, expected)] = copy.deepcopy(item_entity)
 
         return results

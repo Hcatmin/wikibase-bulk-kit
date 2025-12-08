@@ -144,16 +144,12 @@ class ReplaceAllStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        items_by_qid = context.item_searcher.find_items_by_qids(
-            dataframe["__qid"].tolist(),
-            language=context.language,
-        )
-
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
         for _, row in dataframe.iterrows():
-            qid = row.get("__qid")
-            item: dict = items_by_qid.pop(qid)
+            item = copy.deepcopy(row.get("__item"))
+            if not item:
+                continue
             
             self._set_labels_and_descriptions(item, row, context.language)
 
@@ -177,16 +173,12 @@ class AppendOrReplaceStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        items_by_qid = context.item_searcher.find_items_by_qids(
-            dataframe["__qid"].tolist(),
-            language=context.language,
-        )
-
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
         for _, row in dataframe.iterrows():
-            qid = row.get("__qid")
-            existing_item: dict = items_by_qid.pop(qid)
+            existing_item = copy.deepcopy(row.get("__item"))
+            if not existing_item:
+                continue
             
             self._set_labels_and_descriptions(existing_item, row, context.language)
 
@@ -237,16 +229,12 @@ class ForceAppendStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        items_by_qid = context.item_searcher.find_items_by_qids(
-            dataframe["__qid"].tolist(),
-            language=context.language,
-        )
-
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
         for _, row in dataframe.iterrows():
-            qid = row.get("__qid")
-            existing_item: dict = items_by_qid.pop(qid)
+            existing_item = copy.deepcopy(row.get("__item"))
+            if not existing_item:
+                continue
             
             self._set_labels_and_descriptions(existing_item, row, context.language)
 
@@ -283,19 +271,15 @@ class KeepStrategy(UpdateStrategy):
         if dataframe.empty or not mapping_rule.statements:
             return
 
-        items_by_qid = context.item_searcher.find_items_by_qids(
-            dataframe["__qid"].tolist(),
-            language=context.language,
-        )
-
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
         kept_claims = 0
         appended_claims = 0
 
         for _, row in dataframe.iterrows():
-            qid = row.get("__qid")
-            existing_item: dict = items_by_qid.pop(qid)
+            existing_item = copy.deepcopy(row.get("__item"))
+            if not existing_item:
+                continue
             
             self._set_labels_and_descriptions(existing_item, row, context.language)
 
@@ -484,17 +468,13 @@ class MergeRefsOrAppendStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        items_by_qid = context.item_searcher.find_items_by_qids(
-            dataframe["__qid"].tolist(),
-            language=context.language,
-        )
-
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
         
         for _, row in dataframe.iterrows():
-            qid = row.get("__qid")
-            existing_item: dict = items_by_qid.pop(qid)
+            existing_item = copy.deepcopy(row.get("__item"))
+            if not existing_item:
+                continue
             
             self._set_labels_and_descriptions(existing_item, row, context.language)
 
@@ -738,17 +718,13 @@ class MergeQualifiersStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        items_by_qid = context.item_searcher.find_items_by_qids(
-            dataframe["__qid"].tolist(),
-            language=context.language,
-        )
-
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
         
         for _, row in dataframe.iterrows():
-            qid = row.get("__qid")
-            existing_item: dict = items_by_qid.pop(qid)
+            existing_item = copy.deepcopy(row.get("__item"))
+            if not existing_item:
+                continue
             
             self._set_labels_and_descriptions(
                 existing_item, row, context.language

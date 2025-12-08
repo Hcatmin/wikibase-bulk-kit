@@ -104,13 +104,14 @@ class MappingContext:
                 normalized_keys.append((norm_label, norm_value))
         if not normalized_keys:
             return
-        qids_found = self.item_searcher.find_qids_by_unique_key(
+        items_found = self.item_searcher.find_items_by_unique_key(
             normalized_keys,
             property_id=property_id,
             property_datatype=property_datatype,
             language=self.language,
         )
-        for (label, value), qid in qids_found.items():
+        for (label, value), item in items_found.items():
+            qid = item.get("id") if item else None
             if qid:
                 norm_label = self._normalize_term(label)
                 norm_value = self._normalize_unique_value(value, property_datatype)
@@ -169,16 +170,18 @@ class MappingContext:
             return cached
 
         # Fallback to on-demand lookup
-        found = self.item_searcher.find_qids_by_unique_key(
+        found_items = self.item_searcher.find_items_by_unique_key(
             [(norm_label, norm_value)],
             property_id=property_id,
             property_datatype=self.get_property_datatype(property_label_or_id),
             language=self.language,
         )
-        qid = found.get((norm_label, norm_value))
-        if qid:
+        item = found_items.get((norm_label, norm_value))
+        if item:
+            qid = item.get("id")
             self.qid_cache_unique[(norm_label, property_id, norm_value)] = qid
-        return qid
+            return qid
+        return None
 
     def verify_items_created(self) -> None:
         """Run a light-weight verification against the DBConnection."""

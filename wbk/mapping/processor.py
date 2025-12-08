@@ -282,7 +282,6 @@ class MappingProcessor:
         if not uk_property_id:
             raise ValueError(f"Unique key property not found: {uk.property}")
 
-        total_rows = len(prepared_df)
         while not prepared_df.empty:
             # Pop chunk from the beginning to free memory
             chunk_size = min(self.chunk_size, len(prepared_df))
@@ -300,42 +299,48 @@ class MappingProcessor:
 
             context.ensure_qids_for_unique_keys(keys, uk_property_id, uk_datatype)
 
-            qids_found = context.item_searcher.find_qids_by_unique_key(
+            items_found = context.item_searcher.find_items_by_unique_key(
                 keys,
                 property_id=uk_property_id,
                 property_datatype=uk_datatype,
                 language=context.language,
             )
 
-            if qids_found:
-                found_records = [
+            found_records = []
+            for (label_value, unique_value), item in items_found.items():
+                if not item:
+                    continue
+                found_records.append(
                     {
                         "__label": label_value,
                         "__unique_key_value": unique_value,
-                        "__qid": qid,
+                        "__item": item,
                     }
-                    for (label_value, unique_value), qid in qids_found.items()
-                ]
+                )
+
+            if found_records:
                 found_df = pd.DataFrame(found_records)
-                df_existing = chunk.merge(
-                    found_df,
-                    on=["__label", "__unique_key_value"],
-                    how="inner",
-                )
-                df_new = (
-                    chunk.merge(
-                        found_df[["__label", "__unique_key_value"]],
-                        on=["__label", "__unique_key_value"],
-                        how="left",
-                        indicator=True,
-                    )
-                    .loc[lambda x: x["_merge"] == "left_only"]
-                    .drop(columns=["_merge"])
-                )
-                del found_df
             else:
-                df_existing = chunk.iloc[0:0]
-                df_new = chunk.copy()  # Create copy so 
+                found_df = pd.DataFrame(
+                    columns=["__label", "__unique_key_value", "__item"]
+                )
+
+            df_existing = chunk.merge(
+                found_df,
+                on=["__label", "__unique_key_value"],
+                how="inner",
+            )
+            df_new = (
+                chunk.merge(
+                    found_df[["__label", "__unique_key_value"]],
+                    on=["__label", "__unique_key_value"],
+                    how="left",
+                    indicator=True,
+                )
+                .loc[lambda x: x["_merge"] == "left_only"]
+                .drop(columns=["_merge"])
+            )
+            del found_df
             del chunk
 
             if not df_new.empty:
