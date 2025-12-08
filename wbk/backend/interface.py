@@ -1,7 +1,10 @@
-from abc import ABC, abstractmethod
-from typing import Any, List, Optional
+from __future__ import annotations
 
-from ..schema.models import PropertySchema, ItemSchema, StatementSchema, ClaimSchema
+from abc import ABC, abstractmethod
+from typing import List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..schema import PropertySchema, ItemSchema
 
 class BackendStrategy(ABC):
     """Abstract base class for Wikibase backend strategies."""

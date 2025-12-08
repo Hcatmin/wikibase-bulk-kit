@@ -15,7 +15,6 @@ from RaiseWikibase.utils import is_same_claim, is_same_snak
 from ..models import MappingRule, UpdateAction, StatementDefinition, CSVFileConfig
 from .context import MappingContext
 from .claim_builder import ClaimBuilder
-from wbk.processor.bulk_item_search import ItemBulkSearcher
 
 
 class BatchMixin:
@@ -145,11 +144,10 @@ class ReplaceAllStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        with ItemBulkSearcher() as item_searcher:
-            items_by_qid = item_searcher.find_items_by_qids(
-                dataframe["__qid"].tolist(),
-                language=context.language,
-            )
+        items_by_qid = context.item_searcher.find_items_by_qids(
+            dataframe["__qid"].tolist(),
+            language=context.language,
+        )
 
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
@@ -179,11 +177,10 @@ class AppendOrReplaceStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        with ItemBulkSearcher() as item_searcher:
-            items_by_qid = item_searcher.find_items_by_qids(
-                dataframe["__qid"].tolist(),
-                language=context.language,
-            )
+        items_by_qid = context.item_searcher.find_items_by_qids(
+            dataframe["__qid"].tolist(),
+            language=context.language,
+        )
 
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
@@ -240,11 +237,10 @@ class ForceAppendStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        with ItemBulkSearcher() as item_searcher:
-            items_by_qid = item_searcher.find_items_by_qids(
-                dataframe["__qid"].tolist(),
-                language=context.language,
-            )
+        items_by_qid = context.item_searcher.find_items_by_qids(
+            dataframe["__qid"].tolist(),
+            language=context.language,
+        )
 
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
@@ -287,11 +283,10 @@ class KeepStrategy(UpdateStrategy):
         if dataframe.empty or not mapping_rule.statements:
             return
 
-        with ItemBulkSearcher() as item_searcher:
-            items_by_qid = item_searcher.find_items_by_qids(
-                dataframe["__qid"].tolist(),
-                language=context.language,
-            )
+        items_by_qid = context.item_searcher.find_items_by_qids(
+            dataframe["__qid"].tolist(),
+            language=context.language,
+        )
 
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
@@ -489,11 +484,10 @@ class MergeRefsOrAppendStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        with ItemBulkSearcher() as item_searcher:
-            items_by_qid = item_searcher.find_items_by_qids(
-                dataframe["__qid"].tolist(),
-                language=context.language,
-            )
+        items_by_qid = context.item_searcher.find_items_by_qids(
+            dataframe["__qid"].tolist(),
+            language=context.language,
+        )
 
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []
@@ -744,11 +738,10 @@ class MergeQualifiersStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        with ItemBulkSearcher() as item_searcher:
-            items_by_qid = item_searcher.find_items_by_qids(
-                dataframe["__qid"].tolist(),
-                language=context.language,
-            )
+        items_by_qid = context.item_searcher.find_items_by_qids(
+            dataframe["__qid"].tolist(),
+            language=context.language,
+        )
 
         statements = self._statements_with_unique_key(mapping_rule)
         items: list[dict] = []

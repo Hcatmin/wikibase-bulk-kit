@@ -20,8 +20,6 @@ from .pipeline import (
     CreateItemsStep,
 )
 
-from wbk.processor.bulk_item_search import ItemBulkSearcher
-
 
 class MappingProcessor:
     """Processes mapping configurations using the new pipeline architecture."""
@@ -302,13 +300,12 @@ class MappingProcessor:
 
             context.ensure_qids_for_unique_keys(keys, uk_property_id, uk_datatype)
 
-            with ItemBulkSearcher() as item_searcher:
-                qids_found = item_searcher.find_qids_by_unique_key(
-                    keys,
-                    property_id=uk_property_id,
-                    property_datatype=uk_datatype,
-                    language=context.language,
-                )
+            qids_found = context.item_searcher.find_qids_by_unique_key(
+                keys,
+                property_id=uk_property_id,
+                property_datatype=uk_datatype,
+                language=context.language,
+            )
 
             if qids_found:
                 found_records = [

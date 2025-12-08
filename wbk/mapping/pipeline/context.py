@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Iterable, Tuple, Dict, Any
 
 from RaiseWikibase.dbconnection import DBConnection
-from wbk.processor.bulk_item_search import ItemBulkSearcher
+from wbk.backend.raisewikibase import RaiseWikibaseBackend
 
 from ..models import StatementDefinition, ValueDefinition, MappingRule
 
@@ -30,6 +30,7 @@ class MappingContext:
         # (label, property_id, unique_value) -> qid
         self.qid_cache_unique: dict[tuple[str, str, str], str] = {}
         self.db_connection = DBConnection()
+        self.item_searcher = RaiseWikibaseBackend()
 
     def ensure_properties(self, mapping: MappingRule) -> None:
         """Populate the property cache (id + datatype) using labels found in statements and unique keys."""
@@ -81,8 +82,9 @@ class MappingContext:
         normalized = [lbl for lbl in normalized if lbl]
         if not normalized:
             return
-        with ItemBulkSearcher() as item_searcher:
-            qids_found = item_searcher.find_items_by_labels_optimized(list(dict.fromkeys(normalized)))
+        qids_found = self.item_searcher.find_items_by_labels_optimized(
+            list(dict.fromkeys(normalized))
+        )
         for label, qid in qids_found.items():
             if qid:
                 self.qid_cache_label[label] = qid
@@ -102,13 +104,12 @@ class MappingContext:
                 normalized_keys.append((norm_label, norm_value))
         if not normalized_keys:
             return
-        with ItemBulkSearcher() as item_searcher:
-            qids_found = item_searcher.find_qids_by_unique_key(
-                normalized_keys,
-                property_id=property_id,
-                property_datatype=property_datatype,
-                language=self.language,
-            )
+        qids_found = self.item_searcher.find_qids_by_unique_key(
+            normalized_keys,
+            property_id=property_id,
+            property_datatype=property_datatype,
+            language=self.language,
+        )
         for (label, value), qid in qids_found.items():
             if qid:
                 norm_label = self._normalize_term(label)
@@ -168,13 +169,12 @@ class MappingContext:
             return cached
 
         # Fallback to on-demand lookup
-        with ItemBulkSearcher() as item_searcher:
-            found = item_searcher.find_qids_by_unique_key(
-                [(norm_label, norm_value)],
-                property_id=property_id,
-                property_datatype=self.get_property_datatype(property_label_or_id),
-                language=self.language,
-            )
+        found = self.item_searcher.find_qids_by_unique_key(
+            [(norm_label, norm_value)],
+            property_id=property_id,
+            property_datatype=self.get_property_datatype(property_label_or_id),
+            language=self.language,
+        )
         qid = found.get((norm_label, norm_value))
         if qid:
             self.qid_cache_unique[(norm_label, property_id, norm_value)] = qid
