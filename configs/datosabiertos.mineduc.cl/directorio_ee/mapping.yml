@@ -12,10 +12,6 @@ csv_files:
     mappings:
       - item:
           label: "{NOM_REG_RBD_A}"
-          unique_key:
-            property: "código oficial de región"
-            value: "{COD_REG_RBD}"
-          description: "Región de Chile"
         statements:
           - property: "código oficial de región"
             value: "{COD_REG_RBD}"
@@ -24,10 +20,6 @@ csv_files:
               label: "región"
       - item:
           label: "{NOM_COM_RBD}"
-          unique_key:
-            property: "código oficial de comuna"
-            value: "{COD_COM_RBD}"
-          description: "Comuna de Chile, denominada {NOM_COM_RBD}"
         statements:
           - property: "código oficial de comuna" 
             value: "{COD_COM_RBD}"
@@ -37,12 +29,9 @@ csv_files:
           - property: "región"
             value:
               label: "{NOM_REG_RBD_A}"
-              unique_key:
-                property: "código oficial de región"
-                value: "{COD_REG_RBD}"
       - item:
           label: "{NOM_RBD}"
-          unique_key:
+          snak:
             property: "rol base de datos del establecimiento"
             value: "{RBD}"
           description: "Colegio {RBD} de la comuna de {NOM_COM_RBD}"
@@ -55,9 +44,6 @@ csv_files:
           - property: "comuna" # datatype: "wikibase-item"
             value: 
               label: "{NOM_COM_RBD}"
-              unique_key:
-                property: "código oficial de comuna"
-                value: "{COD_COM_RBD}"
           - property: "ubicación" # datatype: "globe-coordinate"
             value: 
               - "{LATITUD}"
@@ -69,7 +55,7 @@ csv_files:
     mappings:
       - item:
           label: "{NOM_RBD}"
-          unique_key:
+          snak:
             property: "rol base de datos del establecimiento"
             value: "{RBD}"
         statements:

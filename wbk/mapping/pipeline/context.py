@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Tuple, Dict, Any
+from typing import Iterable, Tuple, Dict, Any, List
 
 from RaiseWikibase.dbconnection import DBConnection
 from wbk.backend.raisewikibase import RaiseWikibaseBackend
@@ -27,19 +27,23 @@ class MappingContext:
         self.pid_cache: dict[str, Dict[str, str | None]] = {}
         # label -> qid cache (label-only lookups)
         self.qid_cache_label: dict[str, str] = {}
-        # (label, property_id, unique_value) -> qid
-        self.qid_cache_unique: dict[tuple[str, str, str], str] = {}
+        # (label, description) -> qid cache
+        self.qid_cache_label_desc: dict[tuple[str, str], str] = {}
+        # (label, property_id, snak_value) -> qid
+        self.qid_cache_snak: dict[tuple[str, str, str], str] = {}
+        # Backward compatibility alias
+        self.qid_cache_unique = self.qid_cache_snak
         self.db_connection = DBConnection()
         self.item_searcher = RaiseWikibaseBackend()
 
     def ensure_properties(self, mapping: MappingRule) -> None:
-        """Populate the property cache (id + datatype) using labels found in statements and unique keys."""
+        """Populate the property cache (id + datatype) using labels from statements."""
         labels: set[str] = set()
 
         statements = mapping.statements
-        unique_keys = [mapping.item.unique_key] if mapping.item.unique_key else None
+        statement_matcher = mapping.item.snak
 
-        def _collect_unique_key_from_value(value_spec: Any):
+        def _collect_statement_matcher_from_value(value_spec: Any):
             """Recursively collect property labels from ValueDefinition.unique_key."""
             if isinstance(value_spec, ValueDefinition):
                 if value_spec.unique_key and value_spec.unique_key.property:
@@ -47,26 +51,24 @@ class MappingContext:
                 return
             if isinstance(value_spec, list):
                 for elem in value_spec:
-                    _collect_unique_key_from_value(elem)
+                    _collect_statement_matcher_from_value(elem)
 
         def _collect_from_statement(statement: StatementDefinition):
             labels.add(statement.property)
-            _collect_unique_key_from_value(statement.value)
+            _collect_statement_matcher_from_value(statement.value)
             for qualifier in _iter_claims(statement.qualifiers):
                 labels.add(qualifier.property)
-                _collect_unique_key_from_value(qualifier.value)
+                _collect_statement_matcher_from_value(qualifier.value)
             for reference in _iter_claims(statement.references):
                 labels.add(reference.property)
-                _collect_unique_key_from_value(reference.value)
+                _collect_statement_matcher_from_value(reference.value)
 
         if statements:
             for stmt in statements:
                 _collect_from_statement(stmt)
 
-        if unique_keys:
-            for uk in unique_keys:
-                if uk and uk.property:
-                    labels.add(uk.property)
+        if statement_matcher and statement_matcher.property:
+            labels.add(statement_matcher.property)
 
         for label in labels:
             if label in self.pid_cache:
@@ -96,6 +98,15 @@ class MappingContext:
         property_datatype: str | None,
     ) -> None:
         """Populate qid cache for label + unique_key combinations."""
+        self.ensure_qids_for_snaks(keys, property_id, property_datatype)
+
+    def ensure_qids_for_snaks(
+        self,
+        keys: Iterable[Tuple[str, str]],
+        property_id: str,
+        property_datatype: str | None,
+    ) -> None:
+        """Populate qid cache for label + snak (property-value) combinations."""
         normalized_keys = []
         for label, value in keys:
             norm_label = self._normalize_term(label)
@@ -104,7 +115,7 @@ class MappingContext:
                 normalized_keys.append((norm_label, norm_value))
         if not normalized_keys:
             return
-        items_found = self.item_searcher.find_items_by_unique_key(
+        items_found = self.item_searcher.find_items_by_label_and_snak(
             normalized_keys,
             property_id=property_id,
             property_datatype=property_datatype,
@@ -116,7 +127,32 @@ class MappingContext:
                 norm_label = self._normalize_term(label)
                 norm_value = self._normalize_unique_value(value, property_datatype)
                 if norm_label and norm_value:
-                    self.qid_cache_unique[(norm_label, property_id, norm_value)] = qid
+                    self.qid_cache_snak[(norm_label, property_id, norm_value)] = qid
+
+    def ensure_qids_for_labels_and_descriptions(
+        self,
+        pairs: Iterable[Tuple[str, str]],
+    ) -> None:
+        """Populate qid cache for label + description combinations."""
+        normalized_pairs: List[Tuple[str, str]] = []
+        for label, desc in pairs:
+            norm_label = self._normalize_term(label)
+            norm_desc = self._normalize_term(desc)
+            if norm_label and norm_desc:
+                normalized_pairs.append((norm_label, norm_desc))
+        if not normalized_pairs:
+            return
+        items_found = self.item_searcher.find_items_by_labels_and_descriptions(
+            normalized_pairs,
+            language=self.language,
+        )
+        for (label, desc), item in items_found.items():
+            qid = item.get("id") if item else None
+            if qid:
+                norm_label = self._normalize_term(label)
+                norm_desc = self._normalize_term(desc)
+                if norm_label and norm_desc:
+                    self.qid_cache_label_desc[(norm_label, norm_desc)] = qid
 
     def get_property_info(self, property_label_or_id: str) -> tuple[str, str | None]:
         """Resolve property id and datatype by label or id."""
@@ -144,12 +180,37 @@ class MappingContext:
         return datatype
 
     def get_qid_by_label(self, label: str | None) -> str | None:
-        """Return qid for label-only lookup."""
+        """Return qid for label-only lookup (from cache only)."""
         norm = self._normalize_term(label)
         if not norm:
             return None
-        if norm in self.qid_cache_label:
-            return self.qid_cache_label[norm]
+        return self.qid_cache_label.get(norm)
+
+    def get_qid_by_label_and_description(
+        self,
+        label: str | None,
+        description: str | None,
+    ) -> str | None:
+        """Return qid for a label + description combination."""
+        norm_label = self._normalize_term(label)
+        norm_desc = self._normalize_term(description)
+        if not norm_label or not norm_desc:
+            return None
+
+        cached = self.qid_cache_label_desc.get((norm_label, norm_desc))
+        if cached:
+            return cached
+
+        # Fallback to on-demand lookup
+        found_items = self.item_searcher.find_items_by_labels_and_descriptions(
+            [(norm_label, norm_desc)],
+            language=self.language,
+        )
+        item = found_items.get((norm_label, norm_desc))
+        if item:
+            qid = item.get("id")
+            self.qid_cache_label_desc[(norm_label, norm_desc)] = qid
+            return qid
         return None
 
     def get_qid_by_unique_key(
@@ -158,19 +219,31 @@ class MappingContext:
         property_label_or_id: str,
         value: str | None,
     ) -> str | None:
-        """Return qid for a label + unique key combination (property/value)."""
+        """Return qid for a label + unique key combination (property/value).
+
+        Deprecated: Use get_qid_by_snak instead.
+        """
+        return self.get_qid_by_snak(label, property_label_or_id, value)
+
+    def get_qid_by_snak(
+        self,
+        label: str | None,
+        property_label_or_id: str,
+        value: str | None,
+    ) -> str | None:
+        """Return qid for a label + snak (property/value) combination."""
         norm_label = self._normalize_term(label)
         property_id, property_datatype = self.get_property_info(property_label_or_id)
         norm_value = self._normalize_unique_value(value, property_datatype)
         if not norm_label or not norm_value:
             return None
 
-        cached = self.qid_cache_unique.get((norm_label, property_id, norm_value))
+        cached = self.qid_cache_snak.get((norm_label, property_id, norm_value))
         if cached:
             return cached
 
         # Fallback to on-demand lookup
-        found_items = self.item_searcher.find_items_by_unique_key(
+        found_items = self.item_searcher.find_items_by_label_and_snak(
             [(norm_label, norm_value)],
             property_id=property_id,
             property_datatype=self.get_property_datatype(property_label_or_id),
@@ -179,7 +252,7 @@ class MappingContext:
         item = found_items.get((norm_label, norm_value))
         if item:
             qid = item.get("id")
-            self.qid_cache_unique[(norm_label, property_id, norm_value)] = qid
+            self.qid_cache_snak[(norm_label, property_id, norm_value)] = qid
             return qid
         return None
 

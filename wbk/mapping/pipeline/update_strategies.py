@@ -45,17 +45,18 @@ class CreateItemsStep(BatchMixin):
     def __init__(self, claim_builder: ClaimBuilder | None = None) -> None:
         self.claim_builder = claim_builder or ClaimBuilder()
 
-    def _maybe_build_unique_key_statement(
+    def _maybe_build_snak_statement(
         self, mapping_rule: MappingRule
     ) -> StatementDefinition | None:
-        uk = mapping_rule.item.unique_key
-        if not uk:
+        """Build a statement from the item's statement matcher if not already present."""
+        snak = mapping_rule.item.snak
+        if not snak:
             return None
         if any(
-            stmt.property == uk.property for stmt in (mapping_rule.statements or [])
+            stmt.property == snak.property for stmt in (mapping_rule.statements or [])
         ):
             return None
-        return StatementDefinition(property=uk.property, value=uk.value)
+        return StatementDefinition(property=snak.property, value=snak.value)
 
     def run(
         self,
@@ -67,9 +68,9 @@ class CreateItemsStep(BatchMixin):
             return
 
         statements = list(mapping_rule.statements or [])
-        extra_uk = self._maybe_build_unique_key_statement(mapping_rule)
-        if extra_uk:
-            statements.append(extra_uk)
+        extra_snak = self._maybe_build_snak_statement(mapping_rule)
+        if extra_snak:
+            statements.append(extra_snak)
 
         items: list[dict] = []
         for _, row in dataframe.iterrows():
@@ -116,17 +117,25 @@ class UpdateStrategy(BatchMixin, ABC):
     ) -> None:
         raise NotImplementedError
 
-    def _build_unique_key_statement(self, mapping_rule: MappingRule) -> StatementDefinition | None:
-        uk = mapping_rule.item.unique_key
-        if not uk:
+    def _build_snak_statement(
+        self, mapping_rule: MappingRule
+    ) -> StatementDefinition | None:
+        """Build a statement from the item's statement matcher if not already present."""
+        snak = mapping_rule.item.snak
+        if not snak:
             return None
-        if any(stmt.property == uk.property for stmt in (mapping_rule.statements or [])):
+        if any(
+            stmt.property == snak.property for stmt in (mapping_rule.statements or [])
+        ):
             return None
-        return StatementDefinition(property=uk.property, value=uk.value)
+        return StatementDefinition(property=snak.property, value=snak.value)
 
-    def _statements_with_unique_key(self, mapping_rule: MappingRule) -> list[StatementDefinition]:
+    def _statements_with_snak(
+        self, mapping_rule: MappingRule
+    ) -> list[StatementDefinition]:
+        """Get statements with the snak statement appended if not already present."""
         statements = list(mapping_rule.statements or [])
-        extra = self._build_unique_key_statement(mapping_rule)
+        extra = self._build_snak_statement(mapping_rule)
         if extra:
             statements.append(extra)
         return statements
@@ -144,7 +153,7 @@ class ReplaceAllStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        statements = self._statements_with_unique_key(mapping_rule)
+        statements = self._statements_with_snak(mapping_rule)
         items: list[dict] = []
         for _, row in dataframe.iterrows():
             item = copy.deepcopy(row.get("__item"))
@@ -173,7 +182,7 @@ class AppendOrReplaceStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        statements = self._statements_with_unique_key(mapping_rule)
+        statements = self._statements_with_snak(mapping_rule)
         items: list[dict] = []
         for _, row in dataframe.iterrows():
             existing_item = copy.deepcopy(row.get("__item"))
@@ -229,7 +238,7 @@ class ForceAppendStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        statements = self._statements_with_unique_key(mapping_rule)
+        statements = self._statements_with_snak(mapping_rule)
         items: list[dict] = []
         for _, row in dataframe.iterrows():
             existing_item = copy.deepcopy(row.get("__item"))
@@ -271,7 +280,7 @@ class KeepStrategy(UpdateStrategy):
         if dataframe.empty or not mapping_rule.statements:
             return
 
-        statements = self._statements_with_unique_key(mapping_rule)
+        statements = self._statements_with_snak(mapping_rule)
         items: list[dict] = []
         kept_claims = 0
         appended_claims = 0
@@ -468,7 +477,7 @@ class MergeRefsOrAppendStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        statements = self._statements_with_unique_key(mapping_rule)
+        statements = self._statements_with_snak(mapping_rule)
         items: list[dict] = []
         
         for _, row in dataframe.iterrows():
@@ -718,7 +727,7 @@ class MergeQualifiersStrategy(UpdateStrategy):
         if dataframe.empty:
             return
 
-        statements = self._statements_with_unique_key(mapping_rule)
+        statements = self._statements_with_snak(mapping_rule)
         items: list[dict] = []
         
         for _, row in dataframe.iterrows():

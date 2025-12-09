@@ -633,31 +633,27 @@ class RaiseWikibaseBackend(BackendStrategy):
 
         return items_by_qid
 
-    def find_qids_by_unique_key(
-        self,
-        keys: List[Tuple[str, Optional[str]]],
-        property_id: str,
-        property_datatype: Optional[str] = None,
-        language: str = "en",
-    ) -> Dict[Tuple[str, Optional[str]], Optional[str]]:
-        items = self.find_items_by_unique_key(
-            keys,
-            property_id=property_id,
-            property_datatype=property_datatype,
-            language=language,
-        )
-        return {
-            key: item.get("id") if item else None
-            for key, item in items.items()
-        }
-
-    def find_items_by_unique_key(
+    def find_items_by_label_and_snak(
         self,
         keys: List[Tuple[str, Optional[str]]],
         property_id: str,
         property_datatype: Optional[str] = None,
         language: str = "en",
     ) -> Dict[Tuple[str, Optional[str]], Optional[dict]]:
+        """Find items by label + property-value (snak) pair.
+
+        Args:
+            keys: List of (label, snak_value) tuples.
+            property_id: The property ID to match against.
+            property_datatype: Optional datatype for value normalization.
+            language: Language code for fallback labels.
+
+        Returns:
+            Dict mapping (label, snak_value) -> item entity or None.
+
+        Raises:
+            ValueError: If multiple items have the same label and snak value.
+        """
         if not keys:
             return {}
 
@@ -682,6 +678,9 @@ class RaiseWikibaseBackend(BackendStrategy):
         for label, value in normalized_keys:
             lookup.setdefault(label, []).append(value)
 
+        # Track matches to detect ambiguity
+        matches_by_key: Dict[Tuple[str, str], List[str]] = {}
+
         for label_text, item_qid, item_json_text in rows:
             if not item_qid:
                 continue
@@ -699,13 +698,137 @@ class RaiseWikibaseBackend(BackendStrategy):
 
             expected_values = lookup.get(label_text, [])
             for expected in expected_values:
-                if expected in claim_values and (label_text, expected) not in results:
-                    item_entity = self._build_item_entity(
-                        item_qid,
-                        item_json_text,
-                        language,
-                        fallback_label=label_text,
-                    )
-                    results[(label_text, expected)] = copy.deepcopy(item_entity)
+                if expected in claim_values:
+                    key = (label_text, expected)
+                    matches_by_key.setdefault(key, []).append(item_qid)
+                    if key not in results:
+                        item_entity = self._build_item_entity(
+                            item_qid,
+                            item_json_text,
+                            language,
+                            fallback_label=label_text,
+                        )
+                        results[key] = copy.deepcopy(item_entity)
+
+        # Check for ambiguity
+        for key, qids in matches_by_key.items():
+            if len(qids) > 1:
+                raise ValueError(
+                    f"Ambiguous match: Multiple items ({qids}) have label "
+                    f"'{key[0]}' and snak value '{key[1]}' for property "
+                    f"{property_id}"
+                )
+
+        return results
+
+    def find_items_by_labels(
+        self,
+        labels: List[str],
+        language: str = "en",
+    ) -> Dict[str, Optional[dict]]:
+        """Find items by label only.
+
+        Args:
+            labels: List of labels to search for.
+            language: Language code for fallback labels.
+
+        Returns:
+            Dict mapping label -> item entity or None.
+
+        Raises:
+            ValueError: If any label matches multiple items (ambiguity).
+        """
+        if not labels:
+            return {}
+
+        normalized = [
+            self._normalize_label(lbl) for lbl in labels
+            if self._normalize_label(lbl)
+        ]
+        if not normalized:
+            return {}
+
+        normalized = list(dict.fromkeys(normalized))
+        with self._db_cursor() as cursor:
+            rows = self._fetch_items_with_data(cursor, normalized, language)
+
+        # Group items by label to detect ambiguity
+        items_by_label: Dict[str, List[Tuple[str, Any]]] = {}
+        for label_text, item_qid, item_json_text in rows:
+            if item_qid:
+                items_by_label.setdefault(label_text, []).append(
+                    (item_qid, item_json_text)
+                )
+
+        # Check for ambiguity and build results
+        results: Dict[str, Optional[dict]] = {}
+        for label in normalized:
+            items = items_by_label.get(label, [])
+            if len(items) > 1:
+                qids = [qid for qid, _ in items]
+                raise ValueError(
+                    f"Ambiguous match: Multiple items ({qids}) have the label "
+                    f"'{label}'. Use description or statement to disambiguate."
+                )
+            elif len(items) == 1:
+                item_qid, item_json_text = items[0]
+                results[label] = self._build_item_entity(
+                    item_qid, item_json_text, language, fallback_label=label
+                )
+            else:
+                results[label] = None
+
+        return results
+
+    def find_items_by_labels_and_descriptions(
+        self,
+        pairs: List[Tuple[str, str]],
+        language: str = "en",
+    ) -> Dict[Tuple[str, str], Optional[dict]]:
+        """Find items by label + description pair.
+
+        Label + description is unique in Wikibase, so no ambiguity is possible.
+
+        Args:
+            pairs: List of (label, description) tuples.
+            language: Language code for fallback labels.
+
+        Returns:
+            Dict mapping (label, description) -> item entity or None.
+        """
+        if not pairs:
+            return {}
+
+        # Normalize pairs
+        normalized_pairs: List[Tuple[str, str]] = []
+        for label, desc in pairs:
+            norm_label = self._normalize_label(label)
+            norm_desc = self._normalize_label(desc)
+            if norm_label and norm_desc:
+                normalized_pairs.append((norm_label, norm_desc))
+
+        if not normalized_pairs:
+            return {}
+
+        # Get QIDs for label+description pairs
+        qid_results = self._find_qids_by_label_and_description(normalized_pairs)
+
+        # Load full item data for found QIDs
+        qids_to_load = [qid for qid in qid_results.values() if qid]
+        items_by_qid: Dict[str, dict] = {}
+        if qids_to_load:
+            with self._db_cursor() as cursor:
+                items_by_qid = self._bulk_find_items_with_data_by_qid_db(
+                    cursor, list(set(qids_to_load)), language
+                )
+
+        # Build results
+        results: Dict[Tuple[str, str], Optional[dict]] = {}
+        for pair in normalized_pairs:
+            qid = qid_results.get(pair)
+            if qid and qid in items_by_qid:
+                results[pair] = items_by_qid[qid]
+            else:
+                results[pair] = None
 
         return results

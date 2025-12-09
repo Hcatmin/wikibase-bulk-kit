@@ -10,6 +10,7 @@ from wbk.mapping.models import (
     MappingRule,
     CSVFileConfig,
     MappingConfig,
+    ItemSearchMode,
 )
 from .pipeline import (
     MappingContext,
@@ -100,20 +101,22 @@ class MappingProcessor:
         self,
         mapping_rule: MappingRule,
     ) -> list[str]:
-        """Collect dataframe columns needed to resolve item and statement values."""
+        """Collect dataframe columns needed to resolve item and snak values."""
         columns: set[str] = set()
         item_def = mapping_rule.item
 
-        # Item label/unique key/description templates
+        # Item label templates
         columns.update(self._extract_template_columns(item_def.label))
         if "{" not in item_def.label and item_def.label:
             columns.add(item_def.label)
 
-        if item_def.unique_key and item_def.unique_key.value:
-            columns.update(self._extract_template_columns(item_def.unique_key.value))
-            if "{" not in item_def.unique_key.value:
-                columns.add(item_def.unique_key.value)
+        # SnakMatcher templates
+        if item_def.snak and item_def.snak.value:
+            columns.update(self._extract_template_columns(item_def.snak.value))
+            if "{" not in item_def.snak.value:
+                columns.add(item_def.snak.value)
 
+        # Description templates
         if item_def.description:
             columns.update(self._extract_template_columns(item_def.description))
             if "{" not in item_def.description:
@@ -149,7 +152,7 @@ class MappingProcessor:
                 filtered[col].isna(), filtered[col].astype(str).str.strip()
             )
 
-        # Critical columns: those needed to resolve label and unique key
+        # Critical columns: those needed to resolve label and search key
         critical_columns: set[str] = set()
         critical_columns.update(self._extract_template_columns(mapping_rule.item.label))
         if (
@@ -159,14 +162,27 @@ class MappingProcessor:
         ):
             critical_columns.add(mapping_rule.item.label)
 
-        if mapping_rule.item.unique_key and mapping_rule.item.unique_key.value:
-            uk_cols = self._extract_template_columns(mapping_rule.item.unique_key.value)
+        # SnakMatcher columns (for snak-based search)
+        if mapping_rule.item.snak and mapping_rule.item.snak.value:
+            stmt_cols = self._extract_template_columns(
+                mapping_rule.item.snak.value
+            )
             if (
-                not uk_cols
-                and mapping_rule.item.unique_key.value in filtered.columns
+                not stmt_cols
+                and mapping_rule.item.snak.value in filtered.columns
             ):
-                uk_cols.add(mapping_rule.item.unique_key.value)
-            critical_columns.update(uk_cols)
+                stmt_cols.add(mapping_rule.item.snak.value)
+            critical_columns.update(stmt_cols)
+
+        # Description columns (for description-based search)
+        if mapping_rule.item.description:
+            desc_cols = self._extract_template_columns(mapping_rule.item.description)
+            if (
+                not desc_cols
+                and mapping_rule.item.description in filtered.columns
+            ):
+                desc_cols.add(mapping_rule.item.description)
+            critical_columns.update(desc_cols)
 
         subset = [col for col in critical_columns if col in filtered.columns]
         if subset:
@@ -179,34 +195,44 @@ class MappingProcessor:
         dataframe: pd.DataFrame,
         mapping_rule: MappingRule,
     ) -> pd.DataFrame:
-        """Add computed label/description/unique key helper columns."""
+        """Add computed helper columns based on item search mode.
+
+        Columns added depend on search mode:
+        - LABEL: ["__label"]
+        - LABEL_DESCRIPTION: ["__label", "__description"]
+        - LABEL_SNAK: ["__label", "__snak_value"]
+        """
         df = dataframe.copy()
+        search_mode = mapping_rule.item.search_mode
+
+        # Always add label
         df["__label"] = df.apply(
             lambda row: self._render_value(mapping_rule.item.label, row), axis=1
         )
+        df["__label"] = df["__label"].apply(self._clean_value)
 
-        if mapping_rule.item.unique_key:
-            df["__unique_key_value"] = df.apply(
-                lambda row: self._render_value(mapping_rule.item.unique_key.value, row),
+        # Add search-mode-specific columns
+        if search_mode == ItemSearchMode.LABEL_SNAK:
+            df["__snak_value"] = df.apply(
+                lambda row: self._render_value(
+                    mapping_rule.item.snak.value, row
+                ),
                 axis=1,
             )
-        else:
-            df["__unique_key_value"] = None
-
-        if mapping_rule.item.description:
+            df["__snak_value"] = df["__snak_value"].apply(self._clean_value)
+        elif search_mode == ItemSearchMode.LABEL_DESCRIPTION:
             df["__description"] = df.apply(
                 lambda row: self._render_value(mapping_rule.item.description, row),
                 axis=1,
             )
-
-        df["__label"] = df["__label"].apply(self._clean_value)
-        df["__unique_key_value"] = df["__unique_key_value"].apply(self._clean_value)
-        if "__description" in df.columns:
             df["__description"] = df["__description"].apply(self._clean_value)
 
+        # Drop rows with missing required search fields
         df = df.dropna(subset=["__label"])
-        if mapping_rule.item.unique_key:
-            df = df.dropna(subset=["__unique_key_value"])
+        if search_mode == ItemSearchMode.LABEL_SNAK:
+            df = df.dropna(subset=["__snak_value"])
+        elif search_mode == ItemSearchMode.LABEL_DESCRIPTION:
+            df = df.dropna(subset=["__description"])
 
         return df.drop_duplicates()
 
@@ -274,13 +300,20 @@ class MappingProcessor:
                 if property_id:
                     context.ensure_qids_for_unique_keys(keys, property_id, datatype)
 
-        uk = mapping.item.unique_key
-        if not uk:
-            raise ValueError("Unique key is required to locate existing items.")
+        search_mode = mapping.item.search_mode
 
-        uk_property_id, uk_datatype = context.get_property_info(uk.property)
-        if not uk_property_id:
-            raise ValueError(f"Unique key property not found: {uk.property}")
+        # Resolve property info for snak-based search
+        snak_property_id: str | None = None
+        snak_datatype: str | None = None
+        if search_mode == ItemSearchMode.LABEL_SNAK:
+            stmt = mapping.item.snak
+            if not stmt:
+                raise ValueError(
+                    "Statement matcher is required for LABEL_SNAK search mode."
+                )
+            snak_property_id, snak_datatype = context.get_property_info(stmt.property)
+            if not snak_property_id:
+                raise ValueError(f"Statement property not found: {stmt.property}")
 
         while not prepared_df.empty:
             # Pop chunk from the beginning to free memory
@@ -291,49 +324,24 @@ class MappingProcessor:
             if chunk.empty:
                 continue
 
-            keys = list(
-                chunk[["__label", "__unique_key_value"]].itertuples(
-                    index=False, name=None
-                )
+            # Process chunk based on search mode
+            found_df, merge_columns = self._search_items_in_chunk(
+                chunk=chunk,
+                search_mode=search_mode,
+                context=context,
+                snak_property_id=snak_property_id,
+                snak_datatype=snak_datatype,
             )
-
-            context.ensure_qids_for_unique_keys(keys, uk_property_id, uk_datatype)
-
-            items_found = context.item_searcher.find_items_by_unique_key(
-                keys,
-                property_id=uk_property_id,
-                property_datatype=uk_datatype,
-                language=context.language,
-            )
-
-            found_records = []
-            for (label_value, unique_value), item in items_found.items():
-                if not item:
-                    continue
-                found_records.append(
-                    {
-                        "__label": label_value,
-                        "__unique_key_value": unique_value,
-                        "__item": item,
-                    }
-                )
-
-            if found_records:
-                found_df = pd.DataFrame(found_records)
-            else:
-                found_df = pd.DataFrame(
-                    columns=["__label", "__unique_key_value", "__item"]
-                )
 
             df_existing = chunk.merge(
                 found_df,
-                on=["__label", "__unique_key_value"],
+                on=merge_columns,
                 how="inner",
             )
             df_new = (
                 chunk.merge(
-                    found_df[["__label", "__unique_key_value"]],
-                    on=["__label", "__unique_key_value"],
+                    found_df[merge_columns],
+                    on=merge_columns,
                     how="left",
                     indicator=True,
                 )
@@ -350,6 +358,152 @@ class MappingProcessor:
             if self.updater and not df_existing.empty:
                 self.updater.run(df_existing, mapping, context)
                 del df_existing
+
+    def _search_items_in_chunk(
+        self,
+        chunk: pd.DataFrame,
+        search_mode: ItemSearchMode,
+        context: MappingContext,
+        snak_property_id: str | None = None,
+        snak_datatype: str | None = None,
+    ) -> tuple[pd.DataFrame, list[str]]:
+        """Search for existing items based on the search mode.
+
+        Returns:
+            Tuple of (found_df with __item column, list of merge columns).
+        """
+        if search_mode == ItemSearchMode.LABEL:
+            return self._search_by_label(chunk, context)
+        elif search_mode == ItemSearchMode.LABEL_DESCRIPTION:
+            return self._search_by_label_and_description(chunk, context)
+        elif search_mode == ItemSearchMode.LABEL_SNAK:
+            return self._search_by_label_and_snak(
+                chunk, context, snak_property_id, snak_datatype
+            )
+        else:
+            raise ValueError(f"Unknown search mode: {search_mode}")
+
+    def _search_by_label(
+        self,
+        chunk: pd.DataFrame,
+        context: MappingContext,
+    ) -> tuple[pd.DataFrame, list[str]]:
+        """Search items by label only."""
+        merge_columns = ["__label"]
+
+        # Check for duplicates
+        if chunk.duplicated(subset=merge_columns).any():
+            duplicated = chunk[chunk.duplicated(subset=merge_columns, keep=False)]
+            raise ValueError(
+                f"Duplicate labels found in chunk. Use description or statement "
+                f"to disambiguate: {duplicated['__label'].unique().tolist()}"
+            )
+
+        labels = chunk["__label"].dropna().unique().tolist()
+        context.ensure_qids_for_labels(labels)
+
+        items_found = context.item_searcher.find_items_by_labels(
+            labels, language=context.language
+        )
+
+        found_records = []
+        for label, item in items_found.items():
+            if item:
+                found_records.append({"__label": label, "__item": item})
+
+        if found_records:
+            found_df = pd.DataFrame(found_records)
+        else:
+            found_df = pd.DataFrame(columns=["__label", "__item"])
+
+        return found_df, merge_columns
+
+    def _search_by_label_and_description(
+        self,
+        chunk: pd.DataFrame,
+        context: MappingContext,
+    ) -> tuple[pd.DataFrame, list[str]]:
+        """Search items by label and description."""
+        merge_columns = ["__label", "__description"]
+
+        # Check for duplicates
+        if chunk.duplicated(subset=merge_columns).any():
+            duplicated = chunk[chunk.duplicated(subset=merge_columns, keep=False)]
+            raise ValueError(
+                f"Duplicate label+description pairs found in chunk: "
+                f"{duplicated[merge_columns].drop_duplicates().values.tolist()}"
+            )
+
+        pairs = list(
+            chunk[merge_columns].dropna().itertuples(index=False, name=None)
+        )
+        context.ensure_qids_for_labels_and_descriptions(pairs)
+
+        items_found = context.item_searcher.find_items_by_labels_and_descriptions(
+            pairs, language=context.language
+        )
+
+        found_records = []
+        for (label, desc), item in items_found.items():
+            if item:
+                found_records.append({
+                    "__label": label,
+                    "__description": desc,
+                    "__item": item,
+                })
+
+        if found_records:
+            found_df = pd.DataFrame(found_records)
+        else:
+            found_df = pd.DataFrame(columns=["__label", "__description", "__item"])
+
+        return found_df, merge_columns
+
+    def _search_by_label_and_snak(
+        self,
+        chunk: pd.DataFrame,
+        context: MappingContext,
+        property_id: str | None,
+        datatype: str | None,
+    ) -> tuple[pd.DataFrame, list[str]]:
+        """Search items by label and property-value (snak)."""
+        merge_columns = ["__label", "__snak_value"]
+
+        # Check for duplicates
+        if chunk.duplicated(subset=merge_columns).any():
+            duplicated = chunk[chunk.duplicated(subset=merge_columns, keep=False)]
+            raise ValueError(
+                f"Duplicate label+snak pairs found in chunk: "
+                f"{duplicated[merge_columns].drop_duplicates().values.tolist()}"
+            )
+
+        keys = list(
+            chunk[merge_columns].dropna().itertuples(index=False, name=None)
+        )
+        context.ensure_qids_for_snaks(keys, property_id, datatype)
+
+        items_found = context.item_searcher.find_items_by_label_and_snak(
+            keys,
+            property_id=property_id,
+            property_datatype=datatype,
+            language=context.language,
+        )
+
+        found_records = []
+        for (label, snak_value), item in items_found.items():
+            if item:
+                found_records.append({
+                    "__label": label,
+                    "__snak_value": snak_value,
+                    "__item": item,
+                })
+
+        if found_records:
+            found_df = pd.DataFrame(found_records)
+        else:
+            found_df = pd.DataFrame(columns=["__label", "__snak_value", "__item"])
+
+        return found_df, merge_columns
 
     def process(self, mapping_path: str) -> None:
         mapping_config = self._load_mapping_config(mapping_path)
