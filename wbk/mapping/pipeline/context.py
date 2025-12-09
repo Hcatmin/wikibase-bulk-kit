@@ -44,10 +44,10 @@ class MappingContext:
         statement_matcher = mapping.item.snak
 
         def _collect_statement_matcher_from_value(value_spec: Any):
-            """Recursively collect property labels from ValueDefinition.unique_key."""
+            """Recursively collect property labels from ValueDefinition.snak."""
             if isinstance(value_spec, ValueDefinition):
-                if value_spec.unique_key and value_spec.unique_key.property:
-                    labels.add(value_spec.unique_key.property)
+                if value_spec.snak and value_spec.snak.property:
+                    labels.add(value_spec.snak.property)
                 return
             if isinstance(value_spec, list):
                 for elem in value_spec:

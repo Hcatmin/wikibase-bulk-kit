@@ -74,6 +74,8 @@ class StatementDefinition(BaseModel):
 class MappingRule(BaseModel):
     update_action: UpdateAction | None = None
     item: ItemDefinition
+    label: str | None = None
+    description: str | None = None
     statements: List[StatementDefinition] | None = None
 
 class CSVFileConfig(BaseModel):

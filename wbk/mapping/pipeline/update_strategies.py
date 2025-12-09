@@ -27,17 +27,27 @@ class BatchMixin:
         items.clear()
 
     def _set_labels_and_descriptions(self, item: dict, row: pd.Series, language: str) -> None:
-        if (label_value := row.get("__label")) is not None:
+        if (new_label_value := row.get("__new_label")) is not None:
+            item["labels"][language] = {
+                "language": language,
+                "value": str(new_label_value)
+            }
+        elif (label_value := row.get("__label")) is not None:
             item["labels"][language] = {
                 "language": language, 
                 "value": str(label_value)
             }
-        if (description_value := row.get("__description")) is not None:
+        if (new_description_value := row.get("__new_description")) is not None:
+            item["descriptions"][language] = {
+                "language": language,
+                "value": str(new_description_value)
+            }
+        elif (description_value := row.get("__description")) is not None:
             item["descriptions"][language] = {
                 "language": language,
                 "value": str(description_value)
             }
-
+            
 
 class CreateItemsStep(BatchMixin):
     """Handles creation of new items in chunks."""

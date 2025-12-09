@@ -24,9 +24,9 @@ class ValueResolver:
             if value_spec.label:
                 columns.extend(self._extract_template_columns(value_spec.label))
                 columns.append(value_spec.label)
-            if value_spec.unique_key and value_spec.unique_key.value:
-                columns.extend(self._extract_template_columns(value_spec.unique_key.value))
-                columns.append(value_spec.unique_key.value)
+            if value_spec.snak and value_spec.snak.value:
+                columns.extend(self._extract_template_columns(value_spec.snak.value))
+                columns.append(value_spec.snak.value)
         elif isinstance(value_spec, str):
             columns.append(value_spec)
             columns.extend(self._extract_template_columns(value_spec))
@@ -81,9 +81,9 @@ class ValueResolver:
 
         if isinstance(value_spec, ValueDefinition):
             labels = add_labels_from_series(value_spec.label)
-            if value_spec.unique_key:
+            if value_spec.snak:
                 values = self._resolve_series_from_template(
-                    value_spec.unique_key.value, dataframe
+                    value_spec.snak.value, dataframe
                 )
                 for lbl in labels or {None}:
                     for val in values:
@@ -91,7 +91,7 @@ class ValueResolver:
                             unique_keys.add(
                                 (
                                     lbl,
-                                    value_spec.unique_key.property,
+                                    value_spec.snak.property,
                                     val,
                                 )
                             )
@@ -128,11 +128,11 @@ class ValueResolver:
         def resolve_element(elem: ValueSpec):
             if isinstance(elem, ValueDefinition):
                 label_value = self._render_template(elem.label, row) if elem.label else None
-                if elem.unique_key:
-                    unique_value = self._render_template(elem.unique_key.value, row)
+                if elem.snak:
+                    unique_value = self._render_template(elem.snak.value, row)
                     return context.get_qid_by_unique_key(
                         label_value,
-                        elem.unique_key.property,
+                        elem.snak.property,
                         unique_value,
                     )
                 if datatype == "wikibase-item":

@@ -209,7 +209,6 @@ class MappingProcessor:
         df["__label"] = df.apply(
             lambda row: self._render_value(mapping_rule.item.label, row), axis=1
         )
-        df["__label"] = df["__label"].apply(self._clean_value)
 
         # Add search-mode-specific columns
         if search_mode == ItemSearchMode.LABEL_SNAK:
@@ -219,22 +218,40 @@ class MappingProcessor:
                 ),
                 axis=1,
             )
-            df["__snak_value"] = df["__snak_value"].apply(self._clean_value)
         elif search_mode == ItemSearchMode.LABEL_DESCRIPTION:
             df["__description"] = df.apply(
                 lambda row: self._render_value(mapping_rule.item.description, row),
                 axis=1,
             )
-            df["__description"] = df["__description"].apply(self._clean_value)
+
+        if mapping_rule.label:
+            df["__new_label"] = df.apply(
+                lambda row: self._render_value(mapping_rule.label, row),
+                axis=1,
+            )
+        if mapping_rule.description:
+            df["__new_description"] = df.apply(
+                lambda row: self._render_value(mapping_rule.description, row),
+                axis=1,
+            )
 
         # Drop rows with missing required search fields
-        df = df.dropna(subset=["__label"])
-        if search_mode == ItemSearchMode.LABEL_SNAK:
-            df = df.dropna(subset=["__snak_value"])
-        elif search_mode == ItemSearchMode.LABEL_DESCRIPTION:
-            df = df.dropna(subset=["__description"])
+        # Raise error if there are duplicated search columns
+        match search_mode:
+            case ItemSearchMode.LABEL:
+                duplicated = df.duplicated(subset=["__label"])
+                if duplicated.any():
+                    raise ValueError(f"Duplicate labels found in data:\n {df[duplicated].head(10)}")
+            case ItemSearchMode.LABEL_DESCRIPTION:
+                duplicated = df.duplicated(subset=["__label", "__description"])
+                if duplicated.any():
+                    raise ValueError(f"Duplicate label+description pairs found in data:\n {df[duplicated].head(10)}")
+            case ItemSearchMode.LABEL_SNAK:
+                duplicated = df.duplicated(subset=["__label", "__snak_value"])          
+                if duplicated.any():        
+                    raise ValueError(f"Duplicate label+snak pairs found in data:\n {df[duplicated].head(10)}")
 
-        return df.drop_duplicates()
+        return df
 
     def _collect_item_lookups(
         self,
@@ -391,14 +408,6 @@ class MappingProcessor:
         """Search items by label only."""
         merge_columns = ["__label"]
 
-        # Check for duplicates
-        if chunk.duplicated(subset=merge_columns).any():
-            duplicated = chunk[chunk.duplicated(subset=merge_columns, keep=False)]
-            raise ValueError(
-                f"Duplicate labels found in chunk. Use description or statement "
-                f"to disambiguate: {duplicated['__label'].unique().tolist()}"
-            )
-
         labels = chunk["__label"].dropna().unique().tolist()
         context.ensure_qids_for_labels(labels)
 
@@ -425,14 +434,6 @@ class MappingProcessor:
     ) -> tuple[pd.DataFrame, list[str]]:
         """Search items by label and description."""
         merge_columns = ["__label", "__description"]
-
-        # Check for duplicates
-        if chunk.duplicated(subset=merge_columns).any():
-            duplicated = chunk[chunk.duplicated(subset=merge_columns, keep=False)]
-            raise ValueError(
-                f"Duplicate label+description pairs found in chunk: "
-                f"{duplicated[merge_columns].drop_duplicates().values.tolist()}"
-            )
 
         pairs = list(
             chunk[merge_columns].dropna().itertuples(index=False, name=None)
@@ -468,14 +469,6 @@ class MappingProcessor:
     ) -> tuple[pd.DataFrame, list[str]]:
         """Search items by label and property-value (snak)."""
         merge_columns = ["__label", "__snak_value"]
-
-        # Check for duplicates
-        if chunk.duplicated(subset=merge_columns).any():
-            duplicated = chunk[chunk.duplicated(subset=merge_columns, keep=False)]
-            raise ValueError(
-                f"Duplicate label+snak pairs found in chunk: "
-                f"{duplicated[merge_columns].drop_duplicates().values.tolist()}"
-            )
 
         keys = list(
             chunk[merge_columns].dropna().itertuples(index=False, name=None)
