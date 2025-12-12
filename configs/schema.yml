@@ -1,30 +1,462 @@
-namespace: "Chile"
-language: "en"
+namespace: "Chile Educational System"
+language: "es"
 
+properties:
+  # Propiedades Principales
+  - 
+    label: "región"
+    description: "Indica la región a la que pertenece un ítem"
+    datatype: "wikibase-item"
+    aliases: ["región administrativa", "región del país"]
+
+  -
+    label: "comuna"
+    description: "Especifica la comuna asociada a un ítem"
+    datatype: "wikibase-item"
+    aliases: ["municipio", "localidad"]
+
+  -
+    label: "empleados"
+    description: "Número de empleados de un establecimiento"
+    datatype: "quantity"
+    aliases: ["personal", "trabajadores", "número de empleados"]
+
+  -
+    label: "ubicación"
+    description: "Coordenadas o dirección física de un establecimiento"
+    datatype: "globe-coordinate"
+    aliases: ["localización", "dirección", "coordenadas"]
+
+  -
+    label: "matrículados total"
+    description: "Número total de personas matriculadas en un establecimiento"
+    datatype: "quantity"
+    aliases: ["total matriculados", "estudiantes totales"]
+
+  -
+    label: "establecimientos en la zona"
+    description: "Número de establecimientos cercanos o en una zona específica"
+    datatype: "quantity"
+    aliases: ["establecimientos cercanos", "establecimientos en el área"]
+
+  -
+    label: "docentes en la región"
+    description: "Cantidad de docentes registrados en una región"
+    datatype: "quantity"
+    aliases: ["profesores en la región", "maestros regionales"]
+
+  -
+    label: "establecimiento de trabajo"
+    description: "Lugar de trabajo de una persona"
+    datatype: "wikibase-item"
+    aliases: ["lugar de trabajo", "empleador"]
+
+  -
+    label: "región de trabajo"
+    description: "Región en la que trabaja una persona"
+    datatype: "wikibase-item"
+    aliases: ["región laboral", "región de empleo"]
+
+  -
+    label: "comuna de trabajo"
+    description: "Comuna en la que trabaja una persona"
+    datatype: "wikibase-item"
+    aliases: ["comuna laboral", "comuna de empleo"]
+
+  -
+    label: "fecha de nacimiento"
+    description: "Fecha de nacimiento de una persona"
+    datatype: "time"
+    aliases: ["nacimiento", "fecha natal"]
+
+  -
+    label: "género del docente"
+    description: "Género registrado de un docente"
+    datatype: "wikibase-item"
+    aliases: ["género", "sexo"]
+
+  -
+    label: "asignatura"
+    description: "Asignatura que enseña un docente"
+    datatype: "wikibase-item"
+    aliases: ["materia", "curso", "disciplina"]
+
+  # Propiedades Usadas como Calificadores
+  -
+    label: "año"
+    description: "Año en que ocurrió un evento o situación"
+    datatype: "time"
+    aliases: ["año académico", "periodo"]
+
+  # Propiedades con Cualificadores
+  -
+    label: "instancia de"
+    description: "Especifica el tipo de entidad"
+    datatype: "wikibase-item"
+    aliases: ["es un", "tipo de", "clase de"]
+
+  -
+    label: "personas matriculadas"
+    description: "Número de personas actualmente matriculadas"
+    datatype: "quantity"
+    aliases: ["matriculados", "estudiantes matriculados"]
+
+  -
+    label: "personas aprobadas"
+    description: "Cantidad de personas que han aprobado un curso o nivel"
+    datatype: "quantity"
+    aliases: ["aprobados", "estudiantes aprobados"]
+
+  -
+    label: "personas reprobadas"
+    description: "Número de personas que no aprobaron"
+    datatype: "quantity"
+    aliases: ["reprobados", "estudiantes reprobados"]
+
+  -
+    label: "personas retiradas"
+    description: "Cantidad de personas que abandonaron el sistema"
+    datatype: "quantity"
+    aliases: ["retirados", "estudiantes retirados", "desertores"]
+
+  -
+    label: "personas transferidas"
+    description: "Número de personas transferidas a otro establecimiento"
+    datatype: "quantity"
+    aliases: ["transferidos", "estudiantes transferidos"]
+
+  -
+    label: "personas en situación final desconocida"
+    description: "Personas con situación final desconocida"
+    datatype: "quantity"
+    aliases: ["situación desconocida", "sin información final"]
+
+  -
+    label: "total de cursos simples"
+    description: "Número de cursos simples ofrecidos por un establecimiento"
+    datatype: "quantity"
+    aliases: ["cursos simples", "cursos básicos"]
+
+  -
+    label: "total de cursos combinados"
+    description: "Número de cursos combinados ofrecidos por establecimiento"
+    datatype: "quantity"
+    aliases: ["cursos combinados", "cursos mixtos"]
+
+  -
+    label: "promedio de asistencia"
+    description: "Asistencia promedio de los alumnos de un establecimiento"
+    datatype: "quantity"
+    aliases: ["asistencia promedio", "promedio asistencia"]
+
+  -
+    label: "identificador de género"
+    description: "Identificador que clasifica a una persona según su género"
+    datatype: "wikibase-item"
+    aliases: ["género", "clasificación de género"]
+
+  -
+    label: "identificador de nivel de educación"
+    description: "Identifica el nivel educativo en los ítems"
+    datatype: "wikibase-item"
+    aliases: ["nivel educativo", "grado educativo"]
+
+  -
+    label: "nivel de enseñanza"
+    description: "Nivel educativo ofrecido por el establecimiento"
+    datatype: "wikibase-item"
+    aliases: ["nivel educativo", "grado de enseñanza"]
+
+  -
+    label: "ruralidad"
+    description: "Clasificación que indica si establecimiento es rural/urbano"
+    datatype: "wikibase-item"
+    aliases: ["tipo de zona", "ubicación rural/urbana"]
+
+  -
+    label: "orientación religiosa"
+    description: "Afiliación religiosa de un establecimiento"
+    datatype: "wikibase-item"
+    aliases: ["religión", "orientación confesional"]
+
+  -
+    label: "tipo de establecimiento"
+    description: "Clasificación del establecimiento"
+    datatype: "wikibase-item"
+    aliases: ["tipo", "categoría de establecimiento"]
+
+  -
+    label: "estado del establecimiento"
+    description: "Estado operativo de un establecimiento"
+    datatype: "wikibase-item"
+    aliases: ["estado operativo", "situación del establecimiento"]
+
+  -
+    label: "latitud"
+    description: "Latitud de un establecimiento"
+    datatype: "quantity"
+    aliases: ["coordenada de latitud"]
+
+  -
+    label: "longitud"
+    description: "Longitud de un establecimiento"
+    datatype: "quantity"
+    aliases: ["coordenada de longitud"]
+
+  -
+    label: "código oficial de región"
+    description: "Código oficial de región"
+    datatype: "quantity"
+    aliases: ["código de región"]
+
+  -
+    label: "código oficial de comuna"
+    description: "Código oficial de comuna"
+    datatype: "quantity"
+    aliases: ["código de comuna"]
+
+  -
+    label: "rol base de datos del establecimiento"
+    description: "Rol base de datos del establecimiento"
+    datatype: "quantity"
+    aliases: ["rol de base de datos del establecimiento"]
 
 items:
-  - 
-    id: "Q4"
-    label: "Territory"
-    description: "a region of the world"
-    aliases: ["region", "area"]
+  - label: "clase"
+    description: "Instancia de una clase."
 
   - 
-    id: "Q5"
-    label: "Country"
-    description: "distinct territorial body or political entity"
-    aliases: ["countries"]
+    label: "comuna"
+    description: "División administrativa local en Chile"
+    aliases: ["municipio", "localidad"]
     statements:
-      P2:
-        value: "Q4"
+      - 
+        label: "instancia de"
+        value: "clase"
+        datatype: "wikibase-item"
+
+
+  - 
+    label: "región"
+    description: "División administrativa regional en Chile"
+    aliases: ["región administrativa"]
+    statements:
+      - 
+        label: "instancia de"
+        value: "clase"
         datatype: "wikibase-item"
 
   - 
-    id: "Q6"
-    label: "Chile"
-    description: "Country in South America"
-    aliases: ["Chilean country"]
-    statements:
-      P1:
-        value: "Q5"
-        datatype: "wikibase-item"
+    label: "establecimiento"
+    description: "Institución educativa"
+    aliases: ["centro educativo", "institución"]
+
+  - 
+    label: "persona"
+    description: "Individuo humano"
+    aliases: ["individuo", "ser humano"]
+
+  - 
+    label: "colegio"
+    description: "Tipo de establecimiento educativo"
+    aliases: ["escuela secundaria"]
+
+  - 
+    label: "escuela"
+    description: "Tipo de establecimiento educativo básico"
+    aliases: ["escuela primaria"]
+
+  - 
+    label: "liceo"
+    description: "Tipo de establecimiento de educación secundaria"
+    aliases: ["liceo secundario"]
+
+  - 
+    label: "universidad"
+    description: "Institución de educación superior"
+    aliases: ["institución universitaria"]
+
+  - 
+    label: "instituto"
+    description: "Centro de formación técnica o profesional"
+    aliases: ["instituto técnico"]
+
+  - 
+    label: "centro"
+    description: "Centro educativo"
+    aliases: ["centro de formación"]
+
+  - 
+    label: "complejo"
+    description: "Complejo educativo"
+    aliases: ["complejo educacional"]
+
+  # Género (para Identificador de Género P28)
+  - 
+    label: "hombre"
+    description: "Persona de género masculino"
+    aliases: ["masculino", "varón"]
+
+  - 
+    label: "mujer"
+    description: "Persona de género femenino"
+    aliases: ["femenino"]
+
+  - 
+    label: "no binario"
+    description: "Persona de género no binario"
+    aliases: ["género no binario", "otro género"]
+
+  - 
+    label: "sin información"
+    description: "Sin información disponible"
+    aliases: ["desconocido", "no especificado"]
+
+  # Niveles de Educación (para Identificador de Nivel de Educación P29)
+  - 
+    label: "enseñanza básica"
+    description: "Nivel de educación básica"
+    aliases: ["educación básica", "primaria"]
+
+  - 
+    label: "enseñanza media h-c niños y jóvenes"
+    description: "Enseñanza media humanista-científica para niños y jóvenes"
+    aliases: ["media H-C", "secundaria humanista-científica"]
+
+  - 
+    label: "enseñanza media t-p industrial niños"
+    description: "Enseñanza media técnico-profesional industrial niños"
+    aliases: ["media técnica industrial"]
+
+  - 
+    label: "enseñanza media t-p comercial niños"
+    description: "Enseñanza media técnico-profesional comercial niños"
+    aliases: ["media técnica comercial"]
+
+  - 
+    label: "enseñanza media t-p agrícola niños"
+    description: "Enseñanza media técnico-profesional agrícola niños"
+    aliases: ["media técnica agrícola"]
+
+  - 
+    label: "enseñanza media t-p marítima niños"
+    description: "Enseñanza media técnico-profesional marítima niños"
+    aliases: ["media técnica marítima"]
+
+  - 
+    label: "educación de adultos sin oficios (decreto 584/2007)"
+    description: "Educación de adultos sin formación en oficios"
+    aliases: ["adultos sin oficios"]
+
+  - 
+    label: "educación de adultos con oficios (584/2007 y 999/2009)"
+    description: "Educación de adultos con formación en oficios"
+    aliases: ["adultos con oficios"]
+
+  - 
+    label: "educación media h-c adultos (decreto n°239/2004)"
+    description: "Educación media humanista-científica para adultos"
+    aliases: ["media H-C adultos"]
+
+  - 
+    label: "educación media t-p comercial adultos (decreto 1000/2009)"
+    description: "Educación media técnico-profesional comercial adultos"
+    aliases: ["media técnica comercial adultos"]
+
+  - 
+    label: "enseñanza media t-p técnica niños"
+    description: "Enseñanza media técnico-profesional técnica niños"
+    aliases: ["media técnica niños"]
+
+  - 
+    label: "educación media t-p industrial adultos (decreto 1000/2009)"
+    description: "Educación media técnico-profesional industrial adultos"
+    aliases: ["media técnica industrial adultos"]
+
+  - 
+    label: "educación media t-p técnica adultos (decreto 1000/2009)"
+    description: "Educación media técnico-profesional técnica adultos"
+    aliases: ["media técnica adultos"]
+
+  - 
+    label: "educación media t-p marítima adultos (decreto 1000/2009)"
+    description: "Educación media técnico-profesional marítima adultos"
+    aliases: ["media técnica marítima adultos"]
+
+  - 
+    label: "enseñanza media artística niños y jóvenes"
+    description: "Enseñanza media artística para niños y jóvenes"
+    aliases: ["media artística"]
+
+  - 
+    label: "educación media t-p agrícola adultos (decreto 1000/2009)"
+    description: "Educación media técnico-profesional agrícola adultos"
+    aliases: ["media técnica agrícola adultos"]
+
+  # Estado del Establecimiento (para P37)
+  - 
+    label: "funcionando"
+    description: "Establecimiento en operación activa"
+    aliases: ["activo", "operando"]
+
+  - 
+    label: "en receso"
+    description: "Establecimiento temporalmente cerrado"
+    aliases: ["receso", "pausa temporal"]
+
+  - 
+    label: "cerrado"
+    description: "Establecimiento cerrado permanentemente"
+    aliases: ["clausurado", "inactivo"]
+
+  - 
+    label: "autorizado sin matrícula"
+    description: "Establecimiento autorizado pero sin estudiantes"
+    aliases: ["sin matrícula"]
+
+  # Ruralidad (para P33)
+  - 
+    label: "rural"
+    description: "Ubicado en zona rural"
+    aliases: ["zona rural", "campo"]
+
+  - 
+    label: "urbano"
+    description: "Ubicado en zona urbana"
+    aliases: ["zona urbana", "ciudad"]
+
+  # Orientación Religiosa (para P35)
+  - 
+    label: "orientación religiosa laica"
+    description: "Sin afiliación religiosa"
+    aliases: ["laico", "secular"]
+
+  - 
+    label: "orientación religiosa católica"
+    description: "Afiliación religiosa católica"
+    aliases: ["católico"]
+
+  - 
+    label: "orientación religiosa evangélica"
+    description: "Afiliación religiosa evangélica"
+    aliases: ["evangélico", "protestante"]
+
+  - 
+    label: "orientación musulmana"
+    description: "Afiliación religiosa musulmana"
+    aliases: ["musulmán", "islámico"]
+
+  - 
+    label: "orientación judía"
+    description: "Afiliación religiosa judía"
+    aliases: ["judío", "hebreo"]
+
+  - 
+    label: "orientación budista"
+    description: "Afiliación religiosa budista"
+    aliases: ["budista"]
+
+  - 
+    label: "orientación religiosa otro"
+    description: "Otra afiliación religiosa"
+    aliases: ["otra religión"]
