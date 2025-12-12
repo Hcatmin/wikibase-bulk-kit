@@ -43,13 +43,17 @@ sparql_endpoint_url=http://localhost:8282/proxy/wdqs/bigdata/namespace/wdq/sparq
 wikibase_username=Admin
 wikibase_password=your_password
 
-# Configuración de MySQL (opcional, para indexación)
+# Configuración de MySQL (opcional)
 mysql_host=localhost
 mysql_port=3306
 mysql_database=my_wiki
 mysql_user=wikiuser
 mysql_password=sqlpass
 ```
+
+> **Nota:** La configuración de MySQL es opcional. Por defecto, la herramienta
+> intenta obtener estas variables accediendo directamente al contenedor Docker
+> de Wikibase.
 
 ## Comandos disponibles
 
@@ -95,6 +99,7 @@ Construye las tablas de indexación de Wikibase para optimizar búsquedas.
 ```bash
 wbk indexing
 ```
+> Acceso requerido al contenedor de Wikibase
 
 ### `links` - Actualizar tablas de enlaces
 
@@ -103,6 +108,8 @@ Actualiza las tablas de enlaces en Wikibase.
 ```bash
 wbk links
 ```
+
+> Acceso requerido al contenedor de Wikibase
 
 ## Configuraciones de ejemplo
 
