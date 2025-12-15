@@ -639,6 +639,7 @@ class RaiseWikibaseBackend(BackendStrategy):
         property_id: str,
         property_datatype: Optional[str] = None,
         language: str = "en",
+        allow_ambiguous: bool = False,
     ) -> Dict[Tuple[str, Optional[str]], Optional[dict]]:
         """Find items by label + property-value (snak) pair.
 
@@ -647,6 +648,8 @@ class RaiseWikibaseBackend(BackendStrategy):
             property_id: The property ID to match against.
             property_datatype: Optional datatype for value normalization.
             language: Language code for fallback labels.
+            allow_ambiguous: If True, return first match when multiple items share
+                the same label+snak combination instead of raising.
 
         Returns:
             Dict mapping (label, snak_value) -> item entity or None.
@@ -713,6 +716,9 @@ class RaiseWikibaseBackend(BackendStrategy):
         # Check for ambiguity
         for key, qids in matches_by_key.items():
             if len(qids) > 1:
+                if allow_ambiguous:
+                    # Keep first match already stored in results
+                    continue
                 raise ValueError(
                     f"Ambiguous match: Multiple items ({qids}) have label "
                     f"'{key[0]}' and snak value '{key[1]}' for property "
@@ -725,12 +731,15 @@ class RaiseWikibaseBackend(BackendStrategy):
         self,
         labels: List[str],
         language: str = "en",
+        allow_ambiguous: bool = False,
     ) -> Dict[str, Optional[dict]]:
         """Find items by label only.
 
         Args:
             labels: List of labels to search for.
             language: Language code for fallback labels.
+            allow_ambiguous: If True, return the first match when multiple items
+                share the same label instead of raising.
 
         Returns:
             Dict mapping label -> item entity or None.
@@ -766,9 +775,15 @@ class RaiseWikibaseBackend(BackendStrategy):
             items = items_by_label.get(label, [])
             if len(items) > 1:
                 qids = [qid for qid, _ in items]
-                raise ValueError(
-                    f"Ambiguous match: Multiple items ({qids}) have the label "
-                    f"'{label}'. Use description or statement to disambiguate."
+                if not allow_ambiguous:
+                    raise ValueError(
+                        f"Ambiguous match: Multiple items ({qids}) have the label "
+                        f"'{label}'. Use description or statement to disambiguate."
+                    )
+                # Use first match to continue processing
+                item_qid, item_json_text = items[0]
+                results[label] = self._build_item_entity(
+                    item_qid, item_json_text, language, fallback_label=label
                 )
             elif len(items) == 1:
                 item_qid, item_json_text = items[0]

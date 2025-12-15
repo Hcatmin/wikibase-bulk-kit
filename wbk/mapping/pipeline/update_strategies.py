@@ -74,6 +74,7 @@ class CreateItemsStep(BatchMixin):
         mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
+        self._reset_working_items()
         if dataframe.empty:
             return
 
@@ -117,6 +118,7 @@ class UpdateStrategy(BatchMixin, ABC):
 
     def __init__(self, claim_builder: ClaimBuilder | None = None) -> None:
         self.claim_builder = claim_builder or ClaimBuilder()
+        self._working_items: dict[str, dict] = {}
 
     @abstractmethod
     def run(
@@ -150,6 +152,35 @@ class UpdateStrategy(BatchMixin, ABC):
             statements.append(extra)
         return statements
 
+    def _get_or_init_item(
+        self,
+        row: pd.Series,
+        context: MappingContext,
+    ) -> dict | None:
+        """Return a working item dict for this row, initializing once per qid."""
+        qid = row.get("__qid")
+        if qid is None and isinstance(row.get("__item"), dict):
+            qid = row["__item"].get("id")
+        if not qid:
+            return None
+
+        if qid not in self._working_items:
+            base_item = context.get_item(qid) or row.get("__item")
+            if not base_item:
+                return None
+            self._working_items[qid] = copy.deepcopy(base_item)
+
+        return self._working_items[qid]
+
+    def _flush_working_items(self, new: bool) -> None:
+        """Flush all accumulated working items and clear cache."""
+        self._flush_items(list(self._working_items.values()), new=new)
+        self._working_items.clear()
+
+    def _reset_working_items(self) -> None:
+        """Clear working item cache at the start of a run."""
+        self._working_items.clear()
+
 
 class ReplaceAllStrategy(UpdateStrategy):
     """Replace the full set of claims for existing items."""
@@ -160,24 +191,23 @@ class ReplaceAllStrategy(UpdateStrategy):
         mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
+        self._reset_working_items()
         if dataframe.empty:
             return
 
         statements = self._statements_with_snak(mapping_rule)
-        items: list[dict] = []
         for _, row in dataframe.iterrows():
-            item = copy.deepcopy(row.get("__item"))
+            item = self._get_or_init_item(row, context)
             if not item:
                 continue
-            
+
             self._set_labels_and_descriptions(item, row, context.language)
 
             item["claims"] = {}
 
             self.claim_builder.apply_statements(item, row, statements, context)
-            items.append(item)
 
-        self._flush_items(items, new=False)
+        self._flush_working_items(new=False)
 
 
 class AppendOrReplaceStrategy(UpdateStrategy):
@@ -189,16 +219,16 @@ class AppendOrReplaceStrategy(UpdateStrategy):
         mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
+        self._reset_working_items()
         if dataframe.empty:
             return
 
         statements = self._statements_with_snak(mapping_rule)
-        items: list[dict] = []
         for _, row in dataframe.iterrows():
-            existing_item = copy.deepcopy(row.get("__item"))
+            existing_item = self._get_or_init_item(row, context)
             if not existing_item:
                 continue
-            
+
             self._set_labels_and_descriptions(existing_item, row, context.language)
 
             for statement in statements:
@@ -231,9 +261,7 @@ class AppendOrReplaceStrategy(UpdateStrategy):
                 else:
                     claims[property_id_stmt] = [new_claim]
 
-            items.append(existing_item)
-
-        self._flush_items(items, new=False)
+        self._flush_working_items(new=False)
 
 
 class ForceAppendStrategy(UpdateStrategy):
@@ -245,16 +273,16 @@ class ForceAppendStrategy(UpdateStrategy):
         mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
+        self._reset_working_items()
         if dataframe.empty:
             return
 
         statements = self._statements_with_snak(mapping_rule)
-        items: list[dict] = []
         for _, row in dataframe.iterrows():
-            existing_item = copy.deepcopy(row.get("__item"))
+            existing_item = self._get_or_init_item(row, context)
             if not existing_item:
                 continue
-            
+
             self._set_labels_and_descriptions(existing_item, row, context.language)
 
             for statement in statements:
@@ -273,9 +301,7 @@ class ForceAppendStrategy(UpdateStrategy):
                 claims = existing_item.setdefault("claims", {})
                 claims.setdefault(property_id_stmt, []).append(new_claim)
 
-            items.append(existing_item)
-
-        self._flush_items(items, new=False)
+        self._flush_working_items(new=False)
 
 
 class KeepStrategy(UpdateStrategy):
@@ -287,19 +313,19 @@ class KeepStrategy(UpdateStrategy):
         mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
+        self._reset_working_items()
         if dataframe.empty or not mapping_rule.statements:
             return
 
         statements = self._statements_with_snak(mapping_rule)
-        items: list[dict] = []
         kept_claims = 0
         appended_claims = 0
 
         for _, row in dataframe.iterrows():
-            existing_item = copy.deepcopy(row.get("__item"))
+            existing_item = self._get_or_init_item(row, context)
             if not existing_item:
                 continue
-            
+
             self._set_labels_and_descriptions(existing_item, row, context.language)
 
             # Ensure claims dict exists and get reference for modifications
@@ -324,9 +350,7 @@ class KeepStrategy(UpdateStrategy):
                 current_claims[property_id_stmt] = new_claim_dict[property_id_stmt]
                 appended_claims += 1
 
-            items.append(existing_item)
-
-        self._flush_items(items, new=False)
+        self._flush_working_items(new=False)
 
         print(
             f"KEEP action summary: kept {kept_claims} existing claims, "
@@ -484,17 +508,17 @@ class MergeRefsOrAppendStrategy(UpdateStrategy):
         mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
+        self._reset_working_items()
         if dataframe.empty:
             return
 
         statements = self._statements_with_snak(mapping_rule)
-        items: list[dict] = []
         
         for _, row in dataframe.iterrows():
-            existing_item = copy.deepcopy(row.get("__item"))
+            existing_item = self._get_or_init_item(row, context)
             if not existing_item:
                 continue
-            
+
             self._set_labels_and_descriptions(existing_item, row, context.language)
 
             for statement in statements:
@@ -541,9 +565,7 @@ class MergeRefsOrAppendStrategy(UpdateStrategy):
                 else:
                     claims[property_id_stmt] = [new_claim]
 
-            items.append(existing_item)
-
-        self._flush_items(items, new=False)
+        self._flush_working_items(new=False)
 
 
 class MergeQualifiersStrategy(UpdateStrategy):
@@ -734,20 +756,18 @@ class MergeQualifiersStrategy(UpdateStrategy):
         mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
+        self._reset_working_items()
         if dataframe.empty:
             return
 
         statements = self._statements_with_snak(mapping_rule)
-        items: list[dict] = []
         
         for _, row in dataframe.iterrows():
-            existing_item = copy.deepcopy(row.get("__item"))
+            existing_item = self._get_or_init_item(row, context)
             if not existing_item:
                 continue
-            
-            self._set_labels_and_descriptions(
-                existing_item, row, context.language
-            )
+
+            self._set_labels_and_descriptions(existing_item, row, context.language)
 
             for statement in statements:
                 new_claim_dict = self.claim_builder.build_claim(
@@ -795,9 +815,7 @@ class MergeQualifiersStrategy(UpdateStrategy):
                 else:
                     claims[property_id_stmt] = [new_claim]
 
-            items.append(existing_item)
-
-        self._flush_items(items, new=False)
+        self._flush_working_items(new=False)
 
 
 class UpdateStrategyFactory:
@@ -821,8 +839,9 @@ class UpdateStrategyFactory:
         csv_config: CSVFileConfig,
         mapping_rule: MappingRule,
         claim_builder: ClaimBuilder | None = None,
+        action: UpdateAction | None = None,
     ) -> UpdateStrategy | None:
-        action = mapping_rule.update_action or csv_config.update_action
+        action = action or mapping_rule.update_action or csv_config.update_action
         if not action:
             return None
         strategy_cls = cls.STRATEGY_MAP.get(action)

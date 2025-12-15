@@ -11,6 +11,7 @@ from wbk.mapping.models import (
     CSVFileConfig,
     MappingConfig,
     ItemSearchMode,
+    UpdateAction,
 )
 from .pipeline import (
     MappingContext,
@@ -41,6 +42,26 @@ class MappingProcessor:
     @chunk_size.setter
     def chunk_size(self, value: int) -> None:
         self._chunk_size = value
+
+    def _resolve_actions(
+        self,
+        mapping_rule: MappingRule,
+        csv_config: CSVFileConfig,
+    ) -> tuple[bool, UpdateAction | None]:
+        """Compute creation/update behavior for a mapping.
+
+        Defaults:
+        - No create/update params: create enabled.
+        - Only update_action provided: create disabled.
+        - Explicit create provided: respect it.
+        """
+        action = mapping_rule.update_action or csv_config.update_action
+        create_flag = mapping_rule.create
+        if create_flag is None:
+            create_flag = csv_config.create
+        if create_flag is None:
+            create_flag = action is None
+        return create_flag, action
 
     def _load_mapping_config(self, mapping_path: str) -> MappingConfig:
         mapping_file = Path(mapping_path)
@@ -194,6 +215,7 @@ class MappingProcessor:
         self,
         dataframe: pd.DataFrame,
         mapping_rule: MappingRule,
+        allow_duplicate_search_keys: bool,
     ) -> pd.DataFrame:
         """Add computed helper columns based on item search mode.
 
@@ -201,6 +223,9 @@ class MappingProcessor:
         - LABEL: ["__label"]
         - LABEL_DESCRIPTION: ["__label", "__description"]
         - LABEL_SNAK: ["__label", "__snak_value"]
+
+        Duplicate search keys are only allowed when explicitly enabled
+        (used for update-only append-style mappings).
         """
         df = dataframe.copy()
         search_mode = mapping_rule.item.search_mode
@@ -236,7 +261,10 @@ class MappingProcessor:
             )
 
         # Drop rows with missing required search fields
-        # Raise error if there are duplicated search columns
+        # Raise error if there are duplicated search columns (when required)
+        if allow_duplicate_search_keys:
+            return df
+
         match search_mode:
             case ItemSearchMode.LABEL:
                 duplicated = df.duplicated(subset=["__label"])
@@ -293,9 +321,23 @@ class MappingProcessor:
         mapping: MappingRule,
         dataframe: pd.DataFrame,
         context: MappingContext,
+        create_enabled: bool,
+        update_action: UpdateAction | None,
     ) -> None:
+        if not create_enabled and not self.updater:
+            return
+
         filtered_df = self._filter_dataframe(dataframe, mapping)
-        prepared_df = self._prepare_item_fields(filtered_df, mapping)
+        allow_duplicates = (not create_enabled) and (
+            update_action != UpdateAction.REPLACE_ALL
+        )
+
+        print(f"allow_duplicates: {allow_duplicates}")
+        prepared_df = self._prepare_item_fields(
+            filtered_df,
+            mapping,
+            allow_duplicates,
+        )
 
         if prepared_df.empty:
             return
@@ -315,7 +357,12 @@ class MappingProcessor:
             for prop_label, keys in unique_keys.items():
                 property_id, datatype = context.get_property_info(prop_label)
                 if property_id:
-                    context.ensure_qids_for_unique_keys(keys, property_id, datatype)
+                    context.ensure_qids_for_unique_keys(
+                        keys,
+                        property_id,
+                        datatype,
+                        allow_ambiguous=allow_duplicates,
+                    )
 
         search_mode = mapping.item.search_mode
 
@@ -348,6 +395,7 @@ class MappingProcessor:
                 context=context,
                 snak_property_id=snak_property_id,
                 snak_datatype=snak_datatype,
+                allow_ambiguous=allow_duplicates,
             )
 
             df_existing = chunk.merge(
@@ -368,8 +416,14 @@ class MappingProcessor:
             del found_df
             del chunk
 
-            if not df_new.empty:
+            if create_enabled and not df_new.empty:
                 self.creator.run(df_new, mapping, context)
+                del df_new
+            elif not create_enabled and not df_new.empty:
+                print(
+                    f"[V2] Skipping creation for {len(df_new)} rows "
+                    f"(create disabled for mapping: {mapping.item.label})"
+                )
                 del df_new
 
             if self.updater and not df_existing.empty:
@@ -383,19 +437,20 @@ class MappingProcessor:
         context: MappingContext,
         snak_property_id: str | None = None,
         snak_datatype: str | None = None,
+        allow_ambiguous: bool = False,
     ) -> tuple[pd.DataFrame, list[str]]:
         """Search for existing items based on the search mode.
 
         Returns:
-            Tuple of (found_df with __item column, list of merge columns).
+            Tuple of (found_df with __qid column, list of merge columns).
         """
         if search_mode == ItemSearchMode.LABEL:
-            return self._search_by_label(chunk, context)
+            return self._search_by_label(chunk, context, allow_ambiguous)
         elif search_mode == ItemSearchMode.LABEL_DESCRIPTION:
             return self._search_by_label_and_description(chunk, context)
         elif search_mode == ItemSearchMode.LABEL_SNAK:
             return self._search_by_label_and_snak(
-                chunk, context, snak_property_id, snak_datatype
+                chunk, context, snak_property_id, snak_datatype, allow_ambiguous
             )
         else:
             raise ValueError(f"Unknown search mode: {search_mode}")
@@ -404,6 +459,7 @@ class MappingProcessor:
         self,
         chunk: pd.DataFrame,
         context: MappingContext,
+        allow_ambiguous: bool = False,
     ) -> tuple[pd.DataFrame, list[str]]:
         """Search items by label only."""
         merge_columns = ["__label"]
@@ -412,18 +468,21 @@ class MappingProcessor:
         context.ensure_qids_for_labels(labels)
 
         items_found = context.item_searcher.find_items_by_labels(
-            labels, language=context.language
+            labels,
+            language=context.language,
+            allow_ambiguous=allow_ambiguous,
         )
 
         found_records = []
         for label, item in items_found.items():
             if item:
-                found_records.append({"__label": label, "__item": item})
+                context.cache_item(item)
+                found_records.append({"__label": label, "__qid": item.get("id")})
 
         if found_records:
             found_df = pd.DataFrame(found_records)
         else:
-            found_df = pd.DataFrame(columns=["__label", "__item"])
+            found_df = pd.DataFrame(columns=["__label", "__qid"])
 
         return found_df, merge_columns
 
@@ -447,16 +506,17 @@ class MappingProcessor:
         found_records = []
         for (label, desc), item in items_found.items():
             if item:
+                context.cache_item(item)
                 found_records.append({
                     "__label": label,
                     "__description": desc,
-                    "__item": item,
+                    "__qid": item.get("id"),
                 })
 
         if found_records:
             found_df = pd.DataFrame(found_records)
         else:
-            found_df = pd.DataFrame(columns=["__label", "__description", "__item"])
+            found_df = pd.DataFrame(columns=["__label", "__description", "__qid"])
 
         return found_df, merge_columns
 
@@ -466,6 +526,7 @@ class MappingProcessor:
         context: MappingContext,
         property_id: str | None,
         datatype: str | None,
+        allow_ambiguous: bool = False,
     ) -> tuple[pd.DataFrame, list[str]]:
         """Search items by label and property-value (snak)."""
         merge_columns = ["__label", "__snak_value"]
@@ -473,28 +534,35 @@ class MappingProcessor:
         keys = list(
             chunk[merge_columns].dropna().itertuples(index=False, name=None)
         )
-        context.ensure_qids_for_snaks(keys, property_id, datatype)
+        context.ensure_qids_for_snaks(
+            keys,
+            property_id,
+            datatype,
+            allow_ambiguous=allow_ambiguous,
+        )
 
         items_found = context.item_searcher.find_items_by_label_and_snak(
             keys,
             property_id=property_id,
             property_datatype=datatype,
             language=context.language,
+            allow_ambiguous=allow_ambiguous,
         )
 
         found_records = []
         for (label, snak_value), item in items_found.items():
             if item:
+                context.cache_item(item)
                 found_records.append({
                     "__label": label,
                     "__snak_value": snak_value,
-                    "__item": item,
+                    "__qid": item.get("id"),
                 })
 
         if found_records:
             found_df = pd.DataFrame(found_records)
         else:
-            found_df = pd.DataFrame(columns=["__label", "__snak_value", "__item"])
+            found_df = pd.DataFrame(columns=["__label", "__snak_value", "__qid"])
 
         return found_df, merge_columns
 
@@ -510,13 +578,20 @@ class MappingProcessor:
             for mapping in csv_config.mappings:
 
                 print(f"[V2] Processing item mapping: {mapping.item.label}")
+                create_enabled, resolved_action = self._resolve_actions(
+                    mapping,
+                    csv_config,
+                )
                 self.updater = UpdateStrategyFactory.for_mapping(
                     csv_config,
                     mapping,
                     self.claim_builder,
+                    action=resolved_action,
                 )
                 self._process_item_mapping(
                     mapping,
                     dataframe.copy(),
                     context,
+                    create_enabled,
+                    resolved_action,
                 )

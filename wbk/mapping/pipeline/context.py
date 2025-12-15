@@ -33,6 +33,8 @@ class MappingContext:
         self.qid_cache_snak: dict[tuple[str, str, str], str] = {}
         # Backward compatibility alias
         self.qid_cache_unique = self.qid_cache_snak
+        # qid -> full item entity cache
+        self.item_cache: dict[str, dict] = {}
         self.db_connection = DBConnection()
         self.item_searcher = RaiseWikibaseBackend()
 
@@ -91,20 +93,41 @@ class MappingContext:
             if qid:
                 self.qid_cache_label[label] = qid
 
+    def cache_item(self, item: dict | None) -> None:
+        """Store a full item entity by qid for reuse."""
+        if not item:
+            return
+        qid = item.get("id")
+        if qid:
+            self.item_cache[qid] = item
+
+    def get_item(self, qid: str | None) -> dict | None:
+        """Return cached item entity."""
+        if not qid:
+            return None
+        return self.item_cache.get(qid)
+
     def ensure_qids_for_unique_keys(
         self,
         keys: Iterable[Tuple[str, str]],
         property_id: str,
         property_datatype: str | None,
+        allow_ambiguous: bool = False,
     ) -> None:
         """Populate qid cache for label + unique_key combinations."""
-        self.ensure_qids_for_snaks(keys, property_id, property_datatype)
+        self.ensure_qids_for_snaks(
+            keys,
+            property_id,
+            property_datatype,
+            allow_ambiguous=allow_ambiguous,
+        )
 
     def ensure_qids_for_snaks(
         self,
         keys: Iterable[Tuple[str, str]],
         property_id: str,
         property_datatype: str | None,
+        allow_ambiguous: bool = False,
     ) -> None:
         """Populate qid cache for label + snak (property-value) combinations."""
         normalized_keys = []
@@ -120,6 +143,7 @@ class MappingContext:
             property_id=property_id,
             property_datatype=property_datatype,
             language=self.language,
+            allow_ambiguous=allow_ambiguous,
         )
         for (label, value), item in items_found.items():
             qid = item.get("id") if item else None

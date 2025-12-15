@@ -73,6 +73,7 @@ class StatementDefinition(BaseModel):
     
 class MappingRule(BaseModel):
     update_action: UpdateAction | None = None
+    create: bool | None = None
     item: ItemDefinition
     label: str | None = None
     description: str | None = None
@@ -85,10 +86,11 @@ class CSVFileConfig(BaseModel):
     decimal_separator: str | None = None
 
     update_action: UpdateAction | None = None
+    create: bool | None = None
     mappings: List[MappingRule]
 
 class MappingConfig(BaseModel):
-    name: str
+    name: str | None = None
     language: str = "es"
     encoding: str = "utf-8"
     delimiter: str = ","
