@@ -22,13 +22,6 @@ def cli():
 
 @cli.command()
 @click.option(
-    '--config', '-c', 
-    'config_path', 
-    type=click.Path(exists=True, path_type=Path),
-    default='configs/project.yml', 
-    help='Path to project config'
-)
-@click.option(
     '--path', '-p', 
     'schema_path', 
     type=click.Path(exists=True, path_type=Path),
