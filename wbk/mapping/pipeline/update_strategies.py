@@ -102,7 +102,6 @@ class CreateItemsStep(BatchMixin):
             items.append(item)
 
         self._flush_items(items, new=True)
-        context.verify_items_created()
 
 
 class UpdateStrategy(BatchMixin, ABC):

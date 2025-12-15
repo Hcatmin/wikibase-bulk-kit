@@ -280,26 +280,6 @@ class MappingContext:
             return qid
         return None
 
-    def verify_items_created(self) -> None:
-        """Run a light-weight verification against the DBConnection."""
-        try:
-            latest_eid = self.db_connection.get_last_eid(content_model="wikibase-item")
-            print(f"Latest item ID in database: Q{latest_eid}")
-
-            cursor = self.db_connection.conn.cursor()
-            cursor.execute(
-                """
-                SELECT page_title, page_id
-                FROM page
-                WHERE page_namespace = 0
-                ORDER BY page_id DESC
-                LIMIT 10
-                """
-            )
-            recent_items = cursor.fetchall()
-            print(f"Recent items in database: {recent_items}")
-        except Exception as exc:
-            print(f"Warning: Could not verify items in database: {exc}")
 
     @staticmethod
     def _normalize_term(term: str | None) -> str | None:
