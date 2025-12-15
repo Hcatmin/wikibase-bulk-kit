@@ -74,7 +74,6 @@ class CreateItemsStep(BatchMixin):
         mapping_rule: MappingRule,
         context: MappingContext,
     ) -> None:
-        self._reset_working_items()
         if dataframe.empty:
             return
 

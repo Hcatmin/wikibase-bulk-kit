@@ -27,7 +27,7 @@ def cli():
     type=click.Path(exists=True, path_type=Path),
     help='Path to schema config'
 )
-def schema(config_path: Path, schema_path: Path) -> None:
+def schema(schema_path: Path) -> None:
     """Sync properties and items into Wikibase from schema.yml."""
     console.print("[blue]Starting schema synchronization to Wikibase...[/blue]")
     
